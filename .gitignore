@@ -1,0 +1,14 @@
+*
+!/.gitignore
+!/README.md
+!/AGENTS.md
+!/build.ps1
+!/THIRD-PARTY-NOTICES.md
+!/src/
+!/src/*.cs
+!/src/*.csproj
+!/src/*.manifest
+!/src/assets/
+!/src/assets/app.ico
+!/third-party/
+!/third-party/mihomo-LICENSE.txt
