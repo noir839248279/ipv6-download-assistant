@@ -13,7 +13,7 @@ namespace IPv6Lens;
 internal sealed record DownloadSite(string Id,string Name,string[] Domains);
 internal sealed class DownloadCounter
 {
-    public long V4,V6,Proxy,Last4,Last6;public double Rate4,Rate6;
+    public long V4,V6,Proxy,Last4,Last6,LastProxy;public double Rate4,Rate6,RateProxy;
     public volatile string State="尚未接管下载",Server="";
     public volatile bool Enabled;
     public long Failures;
@@ -192,8 +192,8 @@ internal sealed class DownloadRouter : IAsyncDisposable
         finally{sessions.TryRemove(id,out _);}
     }
     static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);}}
-    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6);row.Rate4=(a-row.Last4)/seconds;row.Rate6=(b-row.Last6)/seconds;row.Last4=a;row.Last6=b;if(ProtectionLost)row.State="代理设置失效：未受保护，请暂停下载";}}
-    public void Reset(){foreach(var r in Counters.Values.Concat(servers.Values)){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=0;}}
+    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;if(ProtectionLost)row.State="代理设置失效：未受保护，请暂停下载";}}
+    public void Reset(){foreach(var r in Counters.Values.Concat(servers.Values)){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=r.LastProxy=0;r.Rate4=r.Rate6=r.RateProxy=0;}}
     public async ValueTask DisposeAsync(){settings.Dispose();stop.Cancel();listener?.Stop();foreach(var l in nativeListeners)l.Stop();foreach(var s in sessions.Values)s.Client.Dispose();await Task.WhenAll(acceptLoops);if(web!=null){await web.StopAsync();await web.DisposeAsync();}contentDns?.Dispose();stop.Dispose();}
 }
 
