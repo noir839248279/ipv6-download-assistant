@@ -12,17 +12,17 @@ internal sealed class DownloadForm : Form
     public DownloadForm(bool testMode=false){
         Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         this.testMode=testMode;
-        Text="IPv6 下载助手 3.0.4";Width=1220;Height=940;MinimumSize=new(1120,860);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(242,246,250);
+        Text="IPv6 下载助手 3.0.5";Width=1220;Height=1040;MinimumSize=new(1120,980);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(242,246,250);
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(24),RowCount=DownloadRouter.Sites.Length+4,ColumnCount=1};Controls.Add(root);
         root.RowStyles.Add(new(SizeType.Absolute,52));root.RowStyles.Add(new(SizeType.Absolute,34));for(int i=0;i<DownloadRouter.Sites.Length;i++)root.RowStyles.Add(new(SizeType.Percent,100f/DownloadRouter.Sites.Length));root.RowStyles.Add(new(SizeType.Absolute,44));root.RowStyles.Add(new(SizeType.Absolute,76));
         root.Controls.Add(Label("IPv6 下载助手",25));root.Controls.Add(network);
         foreach(var site in DownloadRouter.Sites){
-            var card=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=5,RowCount=1,BackColor=Color.White,Padding=new Padding(12),Margin=new Padding(0,4,0,4)};
+            var card=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=5,RowCount=1,BackColor=Color.White,Padding=new Padding(12,4,12,4),Margin=new Padding(0,4,0,4)};
             card.RowStyles.Add(new(SizeType.Percent,100));
             card.ColumnStyles.Add(new(SizeType.Absolute,180));card.ColumnStyles.Add(new(SizeType.Percent,20));card.ColumnStyles.Add(new(SizeType.Percent,20));card.ColumnStyles.Add(new(SizeType.Percent,20));card.ColumnStyles.Add(new(SizeType.Percent,40));
             var left=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=2,Margin=new Padding(0)};left.RowStyles.Add(new(SizeType.Absolute,30));left.RowStyles.Add(new(SizeType.Percent,100));left.Controls.Add(Label(site.Name,12));
             var toggle=new CheckBox{Text="仅 IPv6：关",Appearance=Appearance.Button,TextAlign=ContentAlignment.MiddleCenter,Dock=DockStyle.Fill,Margin=new Padding(3,1,8,1),FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(236,241,245)};
-            left.Controls.Add(toggle);card.Controls.Add(left);var v4=Label("IPv4  0 B/s\n累计 0 B",11);var v6=Label("IPv6  0 B/s\n累计 0 B",11);v6.ForeColor=Color.FromArgb(0,125,98);var unknown=Label("未知  0 B/s\n累计 0 B",11);unknown.ForeColor=Color.FromArgb(151,98,0);unknown.AccessibleDescription="经原代理转发，外部连接使用IPv4或IPv6无法确认。";var state=Label("原连接方式\n开启后禁止 IPv4 回落",10);card.Controls.Add(v4);card.Controls.Add(v6);card.Controls.Add(unknown);card.Controls.Add(state);root.Controls.Add(card);cards[site.Id]=(toggle,v4,v6,unknown,state);
+            left.Controls.Add(toggle);card.Controls.Add(left);var v4=Label("IPv4 ↓ 0 B/s\n下载 0 B\n↑ 0 B/s\n上传 0 B",10);var v6=Label("IPv6 ↓ 0 B/s\n下载 0 B\n↑ 0 B/s\n上传 0 B",10);v6.ForeColor=Color.FromArgb(0,125,98);var unknown=Label("未知 ↓ 0 B/s\n下载 0 B\n↑ 0 B/s\n上传 0 B",10);unknown.ForeColor=Color.FromArgb(151,98,0);unknown.AccessibleDescription="经原代理转发，外部连接使用IPv4或IPv6无法确认。";var state=Label("原连接方式\n开启后禁止 IPv4 回落",10);v4.Margin=v6.Margin=unknown.Margin=Padding.Empty;card.Controls.Add(v4);card.Controls.Add(v6);card.Controls.Add(unknown);card.Controls.Add(state);root.Controls.Add(card);cards[site.Id]=(toggle,v4,v6,unknown,state);
             toggle.CheckedChanged+=async(_,_)=>await Switch(site.Id,toggle.Checked);
         }
         var actions=new FlowLayoutPanel{Dock=DockStyle.Fill};root.Controls.Add(actions);
@@ -36,10 +36,11 @@ internal sealed class DownloadForm : Form
         Shown+=(_,_)=>{timer.Start();startup=Initialize();};
         FormClosing+=async(_,e)=>{if(closeReady)return;e.Cancel=true;if(closing)return;closing=true;timer.Stop();await startup;try{SaveAutomaticReport();await StopRouting();}catch(Exception ex){MessageBox.Show("恢复设置未完成："+ex.Message);closing=false;timer.Start();return;}closeReady=true;Close();};
     }
+    static string TransferText(string name,double down,long received,double up,long sent)=>$"{name} ↓ {TrafficStore.Bytes(down)}/s\n下载 {TrafficStore.Bytes(received)}\n↑ {TrafficStore.Bytes(up)}/s\n上传 {TrafficStore.Bytes(sent)}";
     void RefreshCards(){
             if(busy||closing)return;
             if(native!=null&&!native.Active)router?.MarkCaptureLost();router?.Sample();if(router==null)return;
-            foreach(var (id,c) in cards){var r=router.Counters[id];c.Four.Text=$"IPv4  {TrafficStore.Bytes(r.Rate4)}/s\n累计 {TrafficStore.Bytes(r.V4)}";c.Six.Text=$"IPv6  {TrafficStore.Bytes(r.Rate6)}/s\n累计 {TrafficStore.Bytes(r.V6)}";c.Unknown.Text=$"未知  {TrafficStore.Bytes(r.RateProxy)}/s\n累计 {TrafficStore.Bytes(r.Proxy)}";long known=r.V4+r.V6;string share=r.ShareText;
+            foreach(var (id,c) in cards){var r=router.Counters[id];c.Four.Text=TransferText("IPv4",r.Rate4,r.V4,r.UploadRate4,r.Upload4);c.Six.Text=TransferText("IPv6",r.Rate6,r.V6,r.UploadRate6,r.Upload6);c.Unknown.Text=TransferText("未知",r.RateProxy,r.Proxy,r.UploadRateProxy,r.UploadProxy);long known=r.V4+r.V6;string share=r.ShareText;
                 string route=r.RateProxy>1024&&r.RateProxy>=Math.Max(r.Rate4,r.Rate6)?"当前主要经原代理（出口未知）":r.Rate4+r.Rate6>1024?(known<65536?"少量数据，下载待确认":r.Rate6>=r.Rate4?"当前主要 IPv6":"当前主要 IPv4"):r.State=="正在使用 IPv6"?"当前空闲；上次连接 IPv6":r.State;
                 c.State.Text=route+" · "+share+"\n"+(id=="global"?"未知：原代理出口协议未确认":"主服务器："+router.MainServer(id));
                 if(router.ProtectionLost){c.Switch.Text=id=="global"?"原路径：可尝试":"失效：未保护";c.Switch.BackColor=id=="global"?Color.PapayaWhip:Color.MistyRose;c.State.ForeColor=Color.DarkRed;c.State.Text=(id=="global"?"普通网页仍尝试原代理／直连":"已接管下载拒绝请求，请暂停下载")+"\n"+share;}
@@ -80,11 +81,11 @@ internal sealed class DownloadForm : Form
         if(native!=null){await native.DisposeAsync();native=null;}
         if(router!=null){await router.DisposeAsync();router=null;}
     }
-    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.4",timeUtc=DateTime.UtcNow,
+    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.5",timeUtc=DateTime.UtcNow,
         protectionLost=router?.ProtectionLost,nativeCapture=native?.Active??false,network=network.Text,
         nativeExitCode=native?.ExitCode,routerHealth=router?.Health(),
-        scope="Received relay bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",
-        services=router?.Counters.Select(p=>new{id=p.Key,enabled=p.Value.Enabled,ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy),ipv4RateBps=p.Value.Rate4,ipv6RateBps=p.Value.Rate6,proxyUnknownRateBps=p.Value.RateProxy,failures=Interlocked.Read(ref p.Value.Failures),state=p.Value.State}).ToArray(),servers=router?.ServerReport()};
+        scope="Sent and received relay stream bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",
+        services=router?.Counters.Select(p=>new{id=p.Key,enabled=p.Value.Enabled,ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy),ipv4RateBps=p.Value.Rate4,ipv6RateBps=p.Value.Rate6,proxyUnknownRateBps=p.Value.RateProxy,ipv4Uploaded=Interlocked.Read(ref p.Value.Upload4),ipv6Uploaded=Interlocked.Read(ref p.Value.Upload6),proxyUnknownUploaded=Interlocked.Read(ref p.Value.UploadProxy),ipv4UploadRateBps=p.Value.UploadRate4,ipv6UploadRateBps=p.Value.UploadRate6,proxyUnknownUploadRateBps=p.Value.UploadRateProxy,failures=Interlocked.Read(ref p.Value.Failures),state=p.Value.State}).ToArray(),servers=router?.ServerReport()};
     void WriteReport(string path)=>File.WriteAllText(path,JsonSerializer.Serialize(Report(),new JsonSerializerOptions{WriteIndented=true}));
     void SaveAutomaticReport(){if(testMode||router==null)return;try{string dir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","reports");Directory.CreateDirectory(dir);WriteReport(Path.Combine(dir,DateTime.Now.ToString("yyyyMMdd-HHmmss")+".json"));}catch{}}
     void Export(){using var save=new SaveFileDialog{Filter="JSON 诊断报告|*.json",FileName="IPv6-download-report.json"};if(save.ShowDialog()!=DialogResult.OK)return;try{WriteReport(save.FileName);hint.Text="报告已导出：包含平台 CDN 域名与流量，不含 URL、账号、文件名或普通网站域名。";}catch(Exception ex){hint.Text="导出失败："+ex.GetType().Name;}}

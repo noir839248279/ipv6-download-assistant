@@ -14,6 +14,7 @@ internal sealed record DownloadSite(string Id,string Name,string[] Domains);
 internal sealed class DownloadCounter
 {
     public long V4,V6,Proxy,Last4,Last6,LastProxy;public double Rate4,Rate6,RateProxy;
+    public long Upload4,Upload6,UploadProxy,LastUpload4,LastUpload6,LastUploadProxy;public double UploadRate4,UploadRate6,UploadRateProxy;
     public volatile string State="尚未接管下载",Server="";
     public volatile bool Enabled;
     public long Failures;
@@ -181,19 +182,20 @@ internal sealed class DownloadRouter : IAsyncDisposable
             else{
                 // Preserve the request path and Host; prevent cross-host reuse and strip proxy credentials.
                 var lines=text.Split("\r\n");var clean=new StringBuilder(first[0]+" "+url.PathAndQuery+" "+first[2]+"\r\n");
-                foreach(var line in lines.Skip(1).Where(l=>l.Length>0&&!l.StartsWith("Proxy-",StringComparison.OrdinalIgnoreCase)&&!l.StartsWith("Connection:",StringComparison.OrdinalIgnoreCase)))clean.Append(line).Append("\r\n");clean.Append("Connection: close\r\n\r\n");await output.WriteAsync(Encoding.Latin1.GetBytes(clean.ToString()),handshake.Token);
+                foreach(var line in lines.Skip(1).Where(l=>l.Length>0&&!l.StartsWith("Proxy-",StringComparison.OrdinalIgnoreCase)&&!l.StartsWith("Connection:",StringComparison.OrdinalIgnoreCase)))clean.Append(line).Append("\r\n");clean.Append("Connection: close\r\n\r\n");var requestHeader=Encoding.Latin1.GetBytes(clean.ToString());await output.WriteAsync(requestHeader,handshake.Token);CountUpload(row,requestHeader.Length,v6,connected.Proxy);
             }
             using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
             DownloadCounter? server=null;if(site!="global"&&servers.Count<2000){server=servers.GetOrAdd(host,_=>new());serverSites[host]=site;}
-            var up=Pump(input,output,null,false,false,lifetime.Token);var down=Pump(output,input,row,v6,connected.Proxy,lifetime.Token,server);
+            var up=Pump(input,output,row,v6,connected.Proxy,lifetime.Token,server,true);var down=Pump(output,input,row,v6,connected.Proxy,lifetime.Token,server);
             responseStarted=true;
             await Task.WhenAny(up,down);lifetime.Cancel();try{await Task.WhenAll(up,down);}catch{}
         }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException or TimeoutException or ObjectDisposedException or HttpRequestException or System.Text.Json.JsonException){Interlocked.Increment(ref row.Failures);row.State=ProtectionLost?"代理设置失效：未受保护，请暂停下载":row.Enabled&&site!="global"?"IPv6 请求未完成；没有回落 IPv4":"连接失败："+ex.GetType().Name;if(!responseStarted)try{using var replyTimeout=new CancellationTokenSource(1000);await input.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"u8.ToArray(),replyTimeout.Token);}catch{}}
         finally{sessions.TryRemove(id,out _);}
     }
-    static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);}}
-    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;if(ProtectionLost)row.State="代理设置失效：未受保护，请暂停下载";}}
-    public void Reset(){foreach(var r in Counters.Values.Concat(servers.Values)){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=r.LastProxy=0;r.Rate4=r.Rate6=r.RateProxy=0;}}
+    static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,bool upload=false){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(upload)CountUpload(c,n,v6,proxy);else if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);}}
+    static void CountUpload(DownloadCounter c,int n,bool v6,bool proxy){if(proxy)Interlocked.Add(ref c.UploadProxy,n);else if(v6)Interlocked.Add(ref c.Upload6,n);else Interlocked.Add(ref c.Upload4,n);}
+    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;long x=Interlocked.Read(ref row.Upload4),y=Interlocked.Read(ref row.Upload6),z=Interlocked.Read(ref row.UploadProxy);row.UploadRate4=Math.Max(0,x-row.LastUpload4)/seconds;row.UploadRate6=Math.Max(0,y-row.LastUpload6)/seconds;row.UploadRateProxy=Math.Max(0,z-row.LastUploadProxy)/seconds;row.LastUpload4=x;row.LastUpload6=y;row.LastUploadProxy=z;if(ProtectionLost)row.State="代理设置失效：未受保护，请暂停下载";}}
+    public void Reset(){foreach(var r in Counters.Values.Concat(servers.Values)){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=r.LastProxy=0;r.Rate4=r.Rate6=r.RateProxy=0;Interlocked.Exchange(ref r.Upload4,0);Interlocked.Exchange(ref r.Upload6,0);Interlocked.Exchange(ref r.UploadProxy,0);r.LastUpload4=r.LastUpload6=r.LastUploadProxy=0;r.UploadRate4=r.UploadRate6=r.UploadRateProxy=0;}}
     public async ValueTask DisposeAsync(){settings.Dispose();stop.Cancel();listener?.Stop();foreach(var l in nativeListeners)l.Stop();foreach(var s in sessions.Values)s.Client.Dispose();await Task.WhenAll(acceptLoops);if(web!=null){await web.StopAsync();await web.DisposeAsync();}contentDns?.Dispose();stop.Dispose();}
 }
 
