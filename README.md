@@ -2,7 +2,7 @@
 
 Windows 11 桌面工具：按实际中继字节显示 IPv4、IPv6 和代理出口未知流量；普通网站优先 IPv6，已识别下载可严格要求 IPv6。
 
-当前版本：3.0.6。使用 C# / .NET 10 WinForms，原生接管复用独立 Mihomo。
+当前版本：3.0.7。使用 C# / .NET 10 WinForms，原生接管复用独立 Mihomo。
 
 ## 能力与边界
 
@@ -11,6 +11,16 @@ Windows 11 桌面工具：按实际中继字节显示 IPv4、IPv6 和代理出�
 - IPv6-only 是已接管连接策略，不是整机 IPv4 防火墙。计数不是校园网账单。
 - 不解密 HTTPS，不安装根证书；报告不保存签名 URL、Cookie、Token 或文件内容。
 - 退出恢复原网络，下载可能重新使用 IPv4；应先暂停下载。
+
+## 代理走 Wi-Fi / 恢复默认
+
+主界面读取 Clash Verge 本机控制器的真实状态，每 10 秒刷新。开启时通过 Mihomo `PATCH /configs` 设置 `interface-name` 为检测到的 Wi-Fi 名称，恢复默认时清空此字段；每次写入后回读验证。不会重启 Clash、编辑订阅、修改 Windows Metric 或自动启用被禁用的网卡。
+
+- 开启前必须有 Wi-Fi 默认路由，以太网在线且 IPv4/IPv6 默认路由的 RouteMetric + InterfaceMetric 均严格优于 Wi-Fi。否则拒绝开启并说明原因。恢复默认不受有线掉线限制。
+- **这是 Clash 全局出站绑定，Clash 内的 DIRECT 国内网页也受影响。** 节点单独设置的网卡可覆盖全局；不声称所有代理流量绝对走 Wi-Fi。本助手直连与其他非 Clash 流量遵循 Windows 路由；特定路由、其他 VPN/TUN 及既有连接可能不同，不能仅凭默认 Metric 保证所有流量走有线。
+- 新连接生效；已建立的连接不会自动迁移或被强制断开。API 写入无需管理员权限，助手原有 TUN 接管仍需要管理员。
+- 退出助手不会自动撤销本次 Clash 运行时绑定；点击“恢复默认”解除。Clash 重载、订阅刷新或重启可能重置绑定，界面会同步真实状态。不会将它自动持久化或默认开启。
+- 全局接口热切换无法严格实现“仅代理节点 Wi-Fi、Clash DIRECT 有线”。要精确实现，需要节点级 `interface-name`、provider `override` 或 Verge 扩展配置及重载，本版未改写这些配置。
 
 ## 构建
 
@@ -31,6 +41,9 @@ Windows 11 桌面工具：按实际中继字节显示 IPv4、IPv6 和代理出�
 ./app/IPv6Lens.exe --relay-resilience-test resilience.json
 ./app/IPv6Lens.exe --redirect-lease-test lease.json
 ./app/IPv6Lens.exe --native-config-test config.json
+./app/IPv6Lens.exe --clash-interface-test clash-unit.json
+./app/IPv6Lens.exe --clash-interface-core-test clash-core.json
+./app/IPv6Lens.exe --clash-interface-probe clash-probe.json
 ```
 
 前两项使用本地服务；lease 测试临时修改并恢复系统 PAC，应先退出助手；native-config 只验证独立内核配置，不开启 TUN。进程测试使用同名 curl 探针，不冒充实际游戏更新验收。
@@ -46,4 +59,6 @@ Windows 11 桌面工具：按实际中继字节显示 IPv4、IPv6 和代理出�
 
 
 3.0.6：两列三行卡片，每卡数据按IPv4/IPv6/未知列与上传下载速度/累计行对齐；状态放在底部。用户明确要求更新桌面版本号时，重命名现有目录和快捷方式。
+
+3.0.7：新增代理走 Wi-Fi/恢复默认开关、Clash API 鉴权与回读、真实网卡/默认路由检查、定时同步及错误提示。DIRECT 范围、既有连接和网卡掉线限制均明确展示。
 

@@ -4,6 +4,7 @@ namespace IPv6Lens;
 internal sealed class DownloadForm : Form
 {
     DownloadRouter? router; NativeCapture? native;
+    readonly ClashInterfaceBinding clashBinding=new();
     sealed class TrafficColumn
     {
         public readonly Label[] Values;
@@ -13,15 +14,21 @@ internal sealed class DownloadForm : Form
     readonly Dictionary<string,(CheckBox Switch,TrafficColumn Four,TrafficColumn Six,TrafficColumn Unknown,Label State)> cards=new();
     readonly Label network=Label("正在检查 IPv6 网络…",11), hint=Label("打开对应开关，再重新开始下载或刷新视频。",10);
     readonly System.Windows.Forms.Timer timer=new(){Interval=1000};
-    bool busy,closing,closeReady,lossNotified;readonly bool testMode;Task startup=Task.CompletedTask;
+    readonly System.Windows.Forms.Timer clashTimer=new(){Interval=10000};
+    readonly CheckBox clashToggle=new(){Text="流量分流：正在读取 Clash 状态…",Appearance=Appearance.Button,AutoCheck=false,TextAlign=ContentAlignment.MiddleLeft,Padding=new Padding(10,0,4,0),FlatStyle=FlatStyle.Flat,BackColor=Color.White,Font=new Font("Microsoft YaHei UI",10)};
+    readonly Label clashStatus=Label("启动 Clash Verge 后自动读取状态。",9);
+    bool busy,closing,closeReady,lossNotified,clashBusy;readonly bool testMode;Task startup=Task.CompletedTask,clashWork=Task.CompletedTask;
     internal bool DefaultsActive=>router!=null&&(testMode||native?.Active==true)&&!router.ProtectionLost&&cards.Values.All(c=>c.Switch.Checked)&&router.Counters.Values.All(c=>c.Enabled);
     public DownloadForm(bool testMode=false){
         Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         this.testMode=testMode;
-        Text="IPv6 下载助手 3.0.6";Width=1240;Height=1020;MinimumSize=new(1100,940);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(242,246,250);
-        var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(20),RowCount=5,ColumnCount=1};Controls.Add(root);
-        root.RowStyles.Add(new(SizeType.Absolute,52));root.RowStyles.Add(new(SizeType.Absolute,34));root.RowStyles.Add(new(SizeType.Percent,100));root.RowStyles.Add(new(SizeType.Absolute,44));root.RowStyles.Add(new(SizeType.Absolute,60));
+        Text="IPv6 下载助手 3.0.7";Width=1240;Height=1020;MinimumSize=new(1100,940);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(242,246,250);
+        var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(20),RowCount=6,ColumnCount=1};Controls.Add(root);
+        root.RowStyles.Add(new(SizeType.Absolute,52));root.RowStyles.Add(new(SizeType.Absolute,34));root.RowStyles.Add(new(SizeType.Absolute,42));root.RowStyles.Add(new(SizeType.Percent,100));root.RowStyles.Add(new(SizeType.Absolute,44));root.RowStyles.Add(new(SizeType.Absolute,60));
         root.Controls.Add(Label("IPv6 下载助手",25));root.Controls.Add(network);
+        var clashBar=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};clashBar.ColumnStyles.Add(new(SizeType.Percent,48));clashBar.ColumnStyles.Add(new(SizeType.Percent,52));
+        clashToggle.Dock=DockStyle.Fill;clashToggle.Margin=new Padding(0,2,10,2);clashBar.Controls.Add(clashToggle,0,0);
+        clashStatus.Margin=Padding.Empty;clashStatus.Dock=DockStyle.Fill;clashBar.Controls.Add(clashStatus,1,0);root.Controls.Add(clashBar);
         var cardGrid=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=3,Margin=Padding.Empty};
         cardGrid.ColumnStyles.Add(new(SizeType.Percent,50));cardGrid.ColumnStyles.Add(new(SizeType.Percent,50));for(int i=0;i<3;i++)cardGrid.RowStyles.Add(new(SizeType.Percent,100f/3));root.Controls.Add(cardGrid);
         foreach(var site in DownloadRouter.Sites){
@@ -41,11 +48,13 @@ internal sealed class DownloadForm : Form
         Button("全部开启",async()=>await SetAll(true));Button("全部关闭",async()=>await SetAll(false));
         Button("清零流量",()=>router?.Reset());Button("导出报告",Export);
         Button("详细诊断",()=>{using var detail=new MainForm();detail.ShowDialog(this);});
-        Button("使用说明",()=>MessageBox.Show("默认全部开启：普通网站优先直连 IPv6，失败后允许 IPv4／原代理；内容下载仅允许 IPv6，不可达则失败。\n\n夸克已知登录接口归入其他网站。Bilibili/YouTube 只按视频 CDN 计数，不把整个浏览器算进去。Steam/Epic 使用独立 Mihomo 内核接管 HTTP/HTTPS；登录也可能受限制。第三方代理内的目的流量无法可靠还原。\n\n开关是策略，不代表当前已下载。以实际速度、累计与主服务器判断；代理出口协议未知的字节不算 IPv6。\n\n请暂停旧下载再启动新下载。关闭开关、退出或接管失效后可能恢复 IPv4。本工具不是整机 IPv4 防火墙。\n\n退出自动保存脱敏报告，不记录 URL、Cookie、Token、文件名或普通网页域名。",Text));
+        Button("使用说明",()=>MessageBox.Show("默认全部开启：普通网站优先直连 IPv6，失败后允许 IPv4／原代理；内容下载仅允许 IPv6，不可达则失败。\n\n夸克已知登录接口归入其他网站。Bilibili/YouTube 只按视频 CDN 计数，不把整个浏览器算进去。Steam/Epic 使用独立 Mihomo 内核接管 HTTP/HTTPS；登录也可能受限制。第三方代理内的目的流量无法可靠还原。\n\n流量分流开关通过 Clash Verge 的 Mihomo 全局 interface-name 绑定网卡；Clash 内所有出站都受影响，包括规则命中的 DIRECT 直连请求。Clash 以外的流量及本助手自身仍遵循 Windows 默认路由。开启前会核实 Wi-Fi 已连接、以太网 IPv4/IPv6 默认路由优先。\n\n开关是策略，不代表当前已下载。以实际速度、累计与主服务器判断；代理出口协议未知的字节不算 IPv6。\n\n请暂停旧下载再启动新下载。关闭开关、退出或接管失效后可能恢复 IPv4。本工具不是整机 IPv4 防火墙。\n\n退出自动保存脱敏报告，不记录 URL、Cookie、Token、文件名或普通网页域名。",Text));
         hint.Text="网站可回退 IPv4；已接管下载不可回退。关闭／退出前请暂停下载，避免恢复原路径后消耗额度。\n数字为助手接收字节；代理出口未知单独显示。已有连接、未知 CDN 和第三方代理可能不受接管。";root.Controls.Add(hint);
         timer.Tick+=(_,_)=>RefreshCards();
+        clashToggle.Click+=async(_,_)=>{if(clashBusy||closing)return;clashWork=ToggleClashBinding();await clashWork;};
+        clashTimer.Tick+=async(_,_)=>{if(clashBusy||closing)return;clashWork=RefreshClashBinding();await clashWork;};
         Shown+=(_,_)=>{timer.Start();startup=Initialize();};
-        FormClosing+=async(_,e)=>{if(closeReady)return;e.Cancel=true;if(closing)return;closing=true;timer.Stop();await startup;try{SaveAutomaticReport();await StopRouting();}catch(Exception ex){MessageBox.Show("恢复设置未完成："+ex.Message);closing=false;timer.Start();return;}closeReady=true;Close();};
+        FormClosing+=async(_,e)=>{if(closeReady)return;e.Cancel=true;if(closing)return;closing=true;timer.Stop();clashTimer.Stop();await startup;await clashWork;try{SaveAutomaticReport();await StopRouting();}catch(Exception ex){MessageBox.Show("恢复设置未完成："+ex.Message);closing=false;timer.Start();clashTimer.Start();return;}closeReady=true;Close();};
     }
     static TrafficColumn MakeColumn(TableLayoutPanel grid,int column,string title,Color color){var header=Label(title,10);header.ForeColor=color;header.TextAlign=ContentAlignment.MiddleRight;header.Margin=Padding.Empty;grid.Controls.Add(header,column,0);var values=new Label[4];for(int i=0;i<4;i++){var value=Label(i%2==0?"0 B/s":"0 B",11);value.ForeColor=color;value.TextAlign=ContentAlignment.MiddleRight;value.Margin=Padding.Empty;grid.Controls.Add(value,column,i+1);values[i]=value;}return new(values);}
     void RefreshCards(){
@@ -61,7 +70,53 @@ internal sealed class DownloadForm : Form
         
     }
     internal void SimulateOwnershipLoss(){if(router!=null){router.OwnershipProbe=()=>false;RefreshCards();}}
-    async Task Initialize(){await SetAll(true);if(testMode){network.Text="本机界面测试：不进行公网探测";return;}if(closing)return;try{var result=await Diagnostics.Network();if(!closing)network.Text=result.Verdict;}catch{if(!closing)network.Text="IPv6 检测未完成；开启后以实际连接为准";}}
+    internal void PreviewClashBinding(){if(testMode)PaintClashBinding(new("WLAN",new("WLAN","以太网",true,true,35,51,20,30)));}
+    async Task Initialize(){await SetAll(true);if(testMode){network.Text="本机界面测试：不进行公网探测";clashToggle.Text="本机界面测试：未操作 Clash Verge";clashToggle.Enabled=false;clashStatus.Text="Clash 配置与网卡状态不会被更改。";return;}if(closing)return;try{var result=await Diagnostics.Network();if(!closing)network.Text=result.Verdict;}catch{if(!closing)network.Text="IPv6 检测未完成；开启后以实际连接为准";}if(!closing){await RefreshClashBinding();clashTimer.Start();}}
+    async Task RefreshClashBinding(){
+        if(testMode||closing||clashBusy)return;
+        clashBusy=true;
+        try{await ReadAndPaintClashBinding();}
+        finally{clashBusy=false;}
+    }
+    async Task ReadAndPaintClashBinding(){
+        try{var state=await clashBinding.ReadAsync();if(!closing)PaintClashBinding(state);}
+        catch(Exception ex){if(!closing){clashToggle.Text="🔀 代理走 Wi-Fi：状态未知，点击重试";clashToggle.Checked=false;clashToggle.BackColor=Color.FromArgb(236,241,245);clashStatus.Text=ClashError(ex);}}
+    }
+    static string ClashError(Exception ex)=>ex switch {HttpRequestException=>"无法连接 Clash Verge，请先启动 Clash Verge 并检查本机控制器。",OperationCanceledException=>"Clash Verge 请求超时；状态未确认，请重试。",System.Text.Json.JsonException=>"Clash 返回内容无法解析，未确认当前状态。",IOException=>"Clash 配置正在变动或不可读，请稍后重试。",_=>ex is InvalidOperationException or TimeoutException?ex.Message:"读取或切换失败，请检查 Clash Verge 和网卡状态。"};
+    void PaintClashBinding(ClashBindingSnapshot state){
+        bool on=state.IsWifiBound;clashToggle.Checked=on;
+        clashToggle.BackColor=on?Color.FromArgb(192,237,220):Color.FromArgb(236,241,245);
+        clashToggle.Text=on
+            ? state.Network.CanEnable
+                ? "📶 代理走 Wi-Fi：已开启 · 点击恢复默认"
+                : "⚠ 已绑定 Wi-Fi · 有线异常 · 点击恢复默认"
+            : !state.IsDefault ? "🔀 Clash 已绑定其他网卡 · 点击恢复默认"
+            : state.Network.CanEnable ? "🔀 代理走 Wi-Fi：已关闭 · 当前有线优先"
+                : "🔀 代理走 Wi-Fi：已关闭 · 有线尚未就绪";
+        string active=on?"含 Clash DIRECT；仅新连接生效。":"Clash 跟随系统路由。";
+        if(!on&&!string.IsNullOrEmpty(state.InterfaceName))active=$"Clash 当前接口为 {state.InterfaceName}（不是 Wi-Fi）。";
+        string priority=state.Network.EthernetFirstIpv4&&state.Network.EthernetFirstIpv6?"以太网优先":"有线未优先";
+        clashStatus.Text=$"{(state.Network.WifiName.Length>0?state.Network.WifiName:"Wi-Fi")}：{(state.Network.WifiConnected?"在线":"离线")}；{(state.Network.EthernetName.Length>0?state.Network.EthernetName:"以太网")}：{(state.Network.EthernetConnected?"在线":"离线")}；{priority}\n{active}";
+    }
+    async Task ToggleClashBinding(){
+        if(testMode||closing||clashBusy)return;
+        clashBusy=true;clashToggle.Enabled=false;
+        try{
+            var current=await clashBinding.ReadAsync();
+            if(closing)return;
+            if(!current.IsDefault)await clashBinding.RestoreDefaultAsync();
+            else{
+                if(!current.Network.CanEnable)throw new InvalidOperationException(current.Network.EnableBlockReason);
+                var answer=MessageBox.Show(this,
+                    "Clash 全局出站将优先绑定 Wi-Fi，规则命中的 DIRECT 国内网站也受影响；节点已有独立网卡设置时可能覆盖全局设置。\n\n本助手直连请求仍跟随系统路由，目前以太网的 IPv4/IPv6 默认路由优先。这不是整机流量隔离，也不保证旁路、VPN 和特定路由走有线。\n\n仅新连接生效，既有连接需重新建立。退出助手不会撤销此项；可点击恢复默认，Clash 重载配置也可能重置它。是否继续？",
+                    "确认流量分流范围",MessageBoxButtons.YesNo,MessageBoxIcon.Warning);
+                if(answer!=DialogResult.Yes)return;
+                await clashBinding.SetWifiAsync();
+            }
+            await ReadAndPaintClashBinding();
+        }catch(Exception ex){if(!closing)MessageBox.Show(this,ClashError(ex),"流量分流未完成",MessageBoxButtons.OK,MessageBoxIcon.Warning);await ReadAndPaintClashBinding();}
+        finally{clashBusy=false;if(!closing)clashToggle.Enabled=true;}
+    }
     void PaintSwitch(string id,bool on){var c=cards[id];c.State.ForeColor=Color.FromArgb(28,48,64);c.Switch.Checked=on;c.Switch.Text=(id=="global"?"IPv6 优先":"仅 IPv6 下载")+(on?"：开":"：关");c.Switch.BackColor=on?Color.FromArgb(192,237,220):Color.FromArgb(236,241,245);}
     async Task SetAll(bool on){if(busy||closing)return;if(on&&router?.ProtectionLost==true){hint.Text="请先暂停下载，全部关闭后再重新开启。";return;}busy=true;foreach(var c in cards.Values)c.Switch.Enabled=false;try{
         if(router==null&&on)await StartRouting();
@@ -92,7 +147,7 @@ internal sealed class DownloadForm : Form
         if(native!=null){await native.DisposeAsync();native=null;}
         if(router!=null){await router.DisposeAsync();router=null;}
     }
-    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.6",timeUtc=DateTime.UtcNow,
+    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.7",timeUtc=DateTime.UtcNow,
         protectionLost=router?.ProtectionLost,nativeCapture=native?.Active??false,network=network.Text,
         nativeExitCode=native?.ExitCode,routerHealth=router?.Health(),
         scope="Sent and received relay stream bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",

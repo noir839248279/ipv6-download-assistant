@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Security.Principal;
 
 namespace IPv6Lens;
@@ -30,16 +30,19 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--trace-owner") { using var c=new EtwCollector(new TrafficStore());c.Start();File.WriteAllText(args[1],c.Status);Console.ReadLine();return; }
         if (args.Length == 4 && args[0] == "--observe-process") { IntegrationTests.Observe(args[1],args[2],int.Parse(args[3]));return; }
         if (args.Length == 2 && args[0] == "--stop-test-process") { IntegrationTests.StopTestProcess(int.Parse(args[1]));return; }
+        if (args.Length == 2 && args[0] == "--clash-interface-test") { ClashInterfaceTests.Run(args[1]);return; }
+        if (args.Length == 2 && args[0] == "--clash-interface-probe") { ClashInterfaceTests.Probe(args[1]);return; }
+        if (args.Length == 2 && args[0] == "--clash-interface-core-test") { ClashInterfaceTests.CoreTest(args[1]);return; }
         if (args.Length > 0 && args[0] == "--ipv4-guard") { Ipv4Guard.Run(args); return; }
         ApplicationConfiguration.Initialize();
-        bool uiSmoke=args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss";
+        bool uiSmoke=args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";
         bool uiNative=args.Length==2&&args[0]=="--ui-native-test";
         if(!uiSmoke&&args.Length==0&&!Admin){try{Process.Start(new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=true,Verb="runas"});}catch{MessageBox.Show("未开启网络接管。Steam/Epic 接管需要管理员权限。");}return;}
         var form=new DownloadForm(uiSmoke);
         if(uiSmoke||uiNative) {
             form.ShowInTaskbar=false;form.Opacity=0;
             var timer=new System.Windows.Forms.Timer {Interval=uiNative?12000:3500};
-            timer.Tick+=(_,_)=> {timer.Stop();if(args[0]=="--ui-smoke-loss")form.SimulateOwnershipLoss();using var bitmap=new Bitmap(form.Width,form.Height);form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(args[1]);File.WriteAllText(args[1]+".json",System.Text.Json.JsonSerializer.Serialize(new{defaultsActive=form.DefaultsActive,services=DownloadRouter.Sites.Length}));form.Close();timer.Dispose();};
+            timer.Tick+=(_,_)=> {timer.Stop();if(args[0]=="--ui-smoke-loss")form.SimulateOwnershipLoss();if(args[0]=="--ui-smoke-split")form.PreviewClashBinding();using var bitmap=new Bitmap(form.Width,form.Height);form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(args[1]);File.WriteAllText(args[1]+".json",System.Text.Json.JsonSerializer.Serialize(new{defaultsActive=form.DefaultsActive,services=DownloadRouter.Sites.Length}));form.Close();timer.Dispose();};
             form.Shown+=(_,_)=>timer.Start();
         }
         Application.Run(form);
