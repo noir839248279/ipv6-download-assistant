@@ -13,10 +13,10 @@ internal sealed class DownloadForm : Form
             DownRate=downRate; DownTotal=downTotal; UpRate=upRate; UpTotal=upTotal;
         }
         public void Set(double down,long received,double up,long sent){
-            DownRate.Text="↓ 下载: "+TrafficStore.Bytes(down)+"/s";
-            DownTotal.Text="  累计: "+TrafficStore.Bytes(received);
-            UpRate.Text="↑ 上传: "+TrafficStore.Bytes(up)+"/s";
-            UpTotal.Text="  累计: "+TrafficStore.Bytes(sent);
+            DownRate.Text="↓ "+TrafficStore.Bytes(down)+"/s";
+            DownTotal.Text="累计: "+TrafficStore.Bytes(received);
+            UpRate.Text="↑ "+TrafficStore.Bytes(up)+"/s";
+            UpTotal.Text="累计: "+TrafficStore.Bytes(sent);
         }
     }
     sealed class CardView
@@ -30,14 +30,14 @@ internal sealed class DownloadForm : Form
         }
     }
     readonly Dictionary<string, CardView> cards=new();
-    readonly Label network=Label("正在检查 IPv6 网络…",10), hint=Label("打开对应开关，再重新开始下载或刷新视频。",9.5f);
-    readonly Label gV6Down=Label("↓ 下载: 0 B/s (累计 0 B)",9.5f), gV6Up=Label("↑ 上传: 0 B/s (累计 0 B)",9.5f), gV6Share=Label("0.0%",9.5f);
-    readonly Label gV4Down=Label("↓ 下载: 0 B/s (累计 0 B)",9.5f), gV4Up=Label("↑ 上传: 0 B/s (累计 0 B)",9.5f);
-    readonly Label gProxyDown=Label("↓ 下载: 0 B/s (累计 0 B)",9.5f), gProxyUp=Label("↑ 上传: 0 B/s (累计 0 B)",9.5f);
+    readonly Label network=Label("正在检查 IPv6 网络…",11), hint=Label("打开对应开关，再重新开始下载或刷新视频。",10.5f);
+    readonly Label gV6Down=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gV6Up=Label("↑ 上传: 0 B/s (累计 0 B)",11f), gV6Share=Label("0.0%",11.5f);
+    readonly Label gV4Down=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gV4Up=Label("↑ 上传: 0 B/s (累计 0 B)",11f);
+    readonly Label gProxyDown=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gProxyUp=Label("↑ 上传: 0 B/s (累计 0 B)",11f);
     readonly System.Windows.Forms.Timer timer=new(){Interval=1000};
     readonly System.Windows.Forms.Timer clashTimer=new(){Interval=10000};
-    readonly CheckBox clashToggle=new(){Enabled=false,Text="流量分流：正在读取 Clash 状态…",Appearance=Appearance.Button,AutoCheck=false,TextAlign=ContentAlignment.MiddleCenter,FlatStyle=FlatStyle.Flat,BackColor=Color.White,Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold)};
-    readonly Label clashStatus=Label("启动 Clash Verge 后自动读取状态。",9.5f);
+    readonly CheckBox clashToggle=new(){Enabled=false,Text="流量分流：正在读取 Clash 状态…",Appearance=Appearance.Button,AutoCheck=false,TextAlign=ContentAlignment.MiddleCenter,FlatStyle=FlatStyle.Flat,BackColor=Color.White,Font=new Font("Microsoft YaHei UI",11.5f,FontStyle.Bold)};
+    readonly Label clashStatus=Label("启动 Clash Verge 后自动读取状态。",10.5f);
     bool busy,closing,closeReady,lossNotified,clashBusy;readonly bool testMode;Task startup=Task.CompletedTask,clashWork=Task.CompletedTask;
     internal bool DefaultsActive=>router!=null&&(testMode||native?.Active==true)&&!router.ProtectionLost&&cards.Values.All(c=>c.Switch.Checked)&&router.Counters.Values.All(c=>c.Enabled);
     public DownloadForm(bool testMode=false){
@@ -45,25 +45,25 @@ internal sealed class DownloadForm : Form
         this.testMode=testMode;
         Text="IPv6 下载助手 3.0.9";Width=1520;Height=1060;MinimumSize=new(1360,960);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(243,246,250);
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(20,14,20,14),RowCount=6,ColumnCount=1};Controls.Add(root);
-        root.RowStyles.Add(new(SizeType.Absolute,76));
-        root.RowStyles.Add(new(SizeType.Absolute,114));
-        root.RowStyles.Add(new(SizeType.Absolute,102));
+        root.RowStyles.Add(new(SizeType.Absolute,80));
+        root.RowStyles.Add(new(SizeType.Absolute,118));
+        root.RowStyles.Add(new(SizeType.Absolute,108));
         root.RowStyles.Add(new(SizeType.Percent,100));
-        root.RowStyles.Add(new(SizeType.Absolute,36));
-        root.RowStyles.Add(new(SizeType.Absolute,28));
+        root.RowStyles.Add(new(SizeType.Absolute,38));
+        root.RowStyles.Add(new(SizeType.Absolute,30));
 
-        // 1. 顶部 Header (图标垂直居中，操作按钮宽幅 680px 容纳 6 颗按钮，副标题独立行不被覆盖)
+        // 1. 顶部 Header (图标垂直居中，操作按钮宽幅 700px 容纳 6 颗大字按钮，副标题独立行不被覆盖)
         var header=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=Padding.Empty};
         header.RowStyles.Add(new(SizeType.Percent,100));
-        header.ColumnStyles.Add(new(SizeType.Absolute,56));header.ColumnStyles.Add(new(SizeType.Percent,100));header.ColumnStyles.Add(new(SizeType.Absolute,680));
-        var appIconBox=new PictureBox{Width=48,Height=48,SizeMode=PictureBoxSizeMode.Zoom,Image=Icon?.ToBitmap()??new Bitmap(48,48),Margin=new Padding(0,8,8,8),Dock=DockStyle.None,Anchor=AnchorStyles.Left|AnchorStyles.Top};
+        header.ColumnStyles.Add(new(SizeType.Absolute,58));header.ColumnStyles.Add(new(SizeType.Percent,100));header.ColumnStyles.Add(new(SizeType.Absolute,700));
+        var appIconBox=new PictureBox{Width=48,Height=48,SizeMode=PictureBoxSizeMode.Zoom,Image=Icon?.ToBitmap()??new Bitmap(48,48),Margin=new Padding(0,8,10,8),Dock=DockStyle.None,Anchor=AnchorStyles.Left|AnchorStyles.Top};
         header.Controls.Add(appIconBox,0,0);
 
         var titleBox=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=2,ColumnCount=1,Margin=Padding.Empty};
-        titleBox.RowStyles.Add(new(SizeType.Absolute,36));titleBox.RowStyles.Add(new(SizeType.Percent,100));
+        titleBox.RowStyles.Add(new(SizeType.Absolute,40));titleBox.RowStyles.Add(new(SizeType.Percent,100));
         var titleRow=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty};
-        titleRow.Controls.Add(new Label{Text="IPv6 下载助手",Font=new Font("Microsoft YaHei UI",16,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),AutoSize=true,Margin=new Padding(0,0,10,0)});
-        var verBadge=new Label{Text="v3.0.9",Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,4,0,0)};
+        titleRow.Controls.Add(new Label{Text="IPv6 下载助手",Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),AutoSize=true,Margin=new Padding(0,0,10,0)});
+        var verBadge=new Label{Text="v3.0.9",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,6,0,0)};
         titleRow.Controls.Add(verBadge);titleBox.Controls.Add(titleRow,0,0);
         network.ForeColor=Color.FromArgb(71,85,105);network.AutoEllipsis=true;network.Margin=Padding.Empty;titleBox.Controls.Add(network,0,1);
         header.Controls.Add(titleBox,1,0);
@@ -71,7 +71,7 @@ internal sealed class DownloadForm : Form
         var actions=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.RightToLeft,WrapContents=false,Margin=Padding.Empty,Padding=new Padding(0,14,0,0)};
         header.Controls.Add(actions,2,0);
         void Button(string title,Action run,Color? bg=null,Color? fg=null){
-            var b=new Button{Text=title,AutoSize=true,Height=36,FlatStyle=FlatStyle.Flat,BackColor=bg??Color.White,ForeColor=fg??Color.FromArgb(30,41,59),Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),Margin=new Padding(4,0,4,0),Padding=new Padding(8,0,8,0)};
+            var b=new Button{Text=title,AutoSize=true,Height=38,FlatStyle=FlatStyle.Flat,BackColor=bg??Color.White,ForeColor=fg??Color.FromArgb(30,41,59),Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(4,0,4,0),Padding=new Padding(10,0,10,0)};
             b.FlatAppearance.BorderColor=Color.FromArgb(203,213,225);
             b.Click+=(_,_)=>{if(!clashBusy)run();};actions.Controls.Add(b);
         }
@@ -83,36 +83,36 @@ internal sealed class DownloadForm : Form
         Button("全部开启",async()=>await SetAll(true),Color.FromArgb(16,185,129),Color.White);
         root.Controls.Add(header);
 
-        // 2. Hero Card: 双网卡智能分流卡片 (加高至 114px，padding 14px，TopLeft 排版杜绝双行文本截断)
-        var hero=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,BackColor=Color.FromArgb(15,23,42),Padding=new Padding(20,12,20,12),Margin=new Padding(0,4,0,6)};
+        // 2. Hero Card: 双网卡智能分流卡片 (加高至 118px，大字清晰排版)
+        var hero=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,BackColor=Color.FromArgb(15,23,42),Padding=new Padding(22,12,22,12),Margin=new Padding(0,4,0,6)};
         hero.RowStyles.Add(new(SizeType.Percent,100));
-        hero.ColumnStyles.Add(new(SizeType.Percent,68));hero.ColumnStyles.Add(new(SizeType.Percent,32));
+        hero.ColumnStyles.Add(new(SizeType.Percent,66));hero.ColumnStyles.Add(new(SizeType.Percent,34));
         var heroLeft=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=2,ColumnCount=1,Margin=Padding.Empty};
-        heroLeft.RowStyles.Add(new(SizeType.Absolute,30));heroLeft.RowStyles.Add(new(SizeType.Percent,100));
-        var heroTitle=new Label{Text="🔀 双网卡自动分流：代理走 Wi-Fi / 直连走有线",Font=new Font("Microsoft YaHei UI",12,FontStyle.Bold),ForeColor=Color.White,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
+        heroLeft.RowStyles.Add(new(SizeType.Absolute,32));heroLeft.RowStyles.Add(new(SizeType.Percent,100));
+        var heroTitle=new Label{Text="🔀 双网卡自动分流：代理走 Wi-Fi / 直连走有线",Font=new Font("Microsoft YaHei UI",13f,FontStyle.Bold),ForeColor=Color.White,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
         heroLeft.Controls.Add(heroTitle,0,0);
         clashStatus.ForeColor=Color.FromArgb(203,213,225);clashStatus.AutoEllipsis=true;clashStatus.TextAlign=ContentAlignment.TopLeft;heroLeft.Controls.Add(clashStatus,0,1);
         hero.Controls.Add(heroLeft,0,0);
         clashToggle.Dock=DockStyle.Fill;clashToggle.Margin=new Padding(16,10,0,10);
         hero.Controls.Add(clashToggle,1,0);root.Controls.Add(hero);
 
-        // 3. 全局三类出口宏观指标条 (加高至 102px，标题列分配 72% 宽度杜绝文字截断)
+        // 3. 全局三类出口宏观指标条 (加高至 108px，大字号粗体高清晰呈现)
         var globalStrip=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=new Padding(0,2,0,6)};
         globalStrip.RowStyles.Add(new(SizeType.Percent,100));
         for(int i=0;i<3;i++)globalStrip.ColumnStyles.Add(new(SizeType.Percent,33.33f));
         Panel GlobalCard(string title,Label line1,Label line2,Label? tag,Color bg,Color border,Color textCol){
             var p=new Panel{Dock=DockStyle.Fill,BackColor=bg,Padding=new Padding(14,8,14,8),Margin=new Padding(4,0,4,0)};
             var tl=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=3,ColumnCount=1,Margin=Padding.Empty};
-            tl.RowStyles.Add(new(SizeType.Absolute,24));tl.RowStyles.Add(new(SizeType.Percent,50));tl.RowStyles.Add(new(SizeType.Percent,50));
+            tl.RowStyles.Add(new(SizeType.Absolute,28));tl.RowStyles.Add(new(SizeType.Percent,50));tl.RowStyles.Add(new(SizeType.Percent,50));
             var headRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=tag!=null?2:1,RowCount=1,Margin=Padding.Empty};
             headRow.RowStyles.Add(new(SizeType.Percent,100));
             if(tag!=null){headRow.ColumnStyles.Add(new(SizeType.Percent,72));headRow.ColumnStyles.Add(new(SizeType.Percent,28));}
-            var head=new Label{Text=title,Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),ForeColor=textCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
+            var head=new Label{Text=title,Font=new Font("Microsoft YaHei UI",11.5f,FontStyle.Bold),ForeColor=textCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
             headRow.Controls.Add(head,0,0);
-            if(tag!=null){tag.Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold);tag.ForeColor=textCol;tag.Dock=DockStyle.Fill;tag.TextAlign=ContentAlignment.MiddleRight;headRow.Controls.Add(tag,1,0);}
+            if(tag!=null){tag.Font=new Font("Microsoft YaHei UI",11.5f,FontStyle.Bold);tag.ForeColor=textCol;tag.Dock=DockStyle.Fill;tag.TextAlign=ContentAlignment.MiddleRight;headRow.Controls.Add(tag,1,0);}
             tl.Controls.Add(headRow,0,0);
-            line1.Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold);line1.ForeColor=Color.FromArgb(15,23,42);line1.Dock=DockStyle.Fill;line1.TextAlign=ContentAlignment.MiddleLeft;
-            line2.Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold);line2.ForeColor=Color.FromArgb(51,65,85);line2.Dock=DockStyle.Fill;line2.TextAlign=ContentAlignment.MiddleLeft;
+            line1.Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold);line1.ForeColor=Color.FromArgb(15,23,42);line1.Dock=DockStyle.Fill;line1.TextAlign=ContentAlignment.MiddleLeft;
+            line2.Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold);line2.ForeColor=Color.FromArgb(51,65,85);line2.Dock=DockStyle.Fill;line2.TextAlign=ContentAlignment.MiddleLeft;
             tl.Controls.Add(line1,0,1);tl.Controls.Add(line2,0,2);p.Controls.Add(tl);return p;
         }
         globalStrip.Controls.Add(GlobalCard("🟢 IPv6 公网直连 (免流主力)",gV6Down,gV6Up,gV6Share,Color.FromArgb(236,253,245),Color.FromArgb(167,243,208),Color.FromArgb(6,95,70)),0,0);
@@ -120,7 +120,7 @@ internal sealed class DownloadForm : Form
         globalStrip.Controls.Add(GlobalCard("🟡 未知出口 (Clash 代理经 Wi-Fi)",gProxyDown,gProxyUp,null,Color.FromArgb(254,243,199),Color.FromArgb(253,230,138),Color.FromArgb(146,64,14)),2,0);
         root.Controls.Add(globalStrip);
 
-        // 4. 6 大平台监控卡片 (宽度与高度充裕，深色高对比度累计流量，杜绝灰色看不清)
+        // 4. 6 大平台监控卡片 (字号加大，指标更清晰更易读)
         var cardGrid=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=3,Margin=Padding.Empty};
         cardGrid.ColumnStyles.Add(new(SizeType.Percent,50));cardGrid.ColumnStyles.Add(new(SizeType.Percent,50));
         for(int i=0;i<3;i++)cardGrid.RowStyles.Add(new(SizeType.Percent,100f/3));
@@ -128,11 +128,11 @@ internal sealed class DownloadForm : Form
 
         foreach(var site in DownloadRouter.Sites){
             var card=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,BackColor=Color.White,Padding=new Padding(16,10,16,8),Margin=new Padding(5)};
-            card.RowStyles.Add(new(SizeType.Absolute,36));card.RowStyles.Add(new(SizeType.Percent,100));card.RowStyles.Add(new(SizeType.Absolute,28));
+            card.RowStyles.Add(new(SizeType.Absolute,38));card.RowStyles.Add(new(SizeType.Percent,100));card.RowStyles.Add(new(SizeType.Absolute,30));
 
             // 卡片头部
             var heading=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};
-            heading.ColumnStyles.Add(new(SizeType.Percent,100));heading.ColumnStyles.Add(new(SizeType.Absolute,140));
+            heading.ColumnStyles.Add(new(SizeType.Percent,100));heading.ColumnStyles.Add(new(SizeType.Absolute,150));
             string siteTitle=site.Id switch{
                 "quark"=>"📁 夸克网盘",
                 "bilibili"=>"📺 Bilibili",
@@ -141,15 +141,15 @@ internal sealed class DownloadForm : Form
                 "youtube"=>"▶️ YouTube",
                 _=>"🌐 其他网站"
             };
-            heading.Controls.Add(new Label{Text=siteTitle,Font=new Font("Microsoft YaHei UI",12.5f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft});
-            var toggle=new CheckBox{Text="仅 IPv6：关",Appearance=Appearance.Button,TextAlign=ContentAlignment.MiddleCenter,Dock=DockStyle.Fill,Margin=new Padding(1),FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(241,245,249),Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold)};
+            heading.Controls.Add(new Label{Text=siteTitle,Font=new Font("Microsoft YaHei UI",14f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft});
+            var toggle=new CheckBox{Text="仅 IPv6：关",Appearance=Appearance.Button,TextAlign=ContentAlignment.MiddleCenter,Dock=DockStyle.Fill,Margin=new Padding(1),FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(241,245,249),Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold)};
             heading.Controls.Add(toggle);card.Controls.Add(heading);
 
             // 核心三列度量 (IPv6, IPv4, 未知出口)
             var metrics=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=new Padding(0,6,0,4)};
             for(int i=0;i<3;i++)metrics.ColumnStyles.Add(new(SizeType.Percent,33.33f));
 
-            var shareLabel=new Label{Text="0.0%",Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight};
+            var shareLabel=new Label{Text="0.0%",Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight};
             // 累计流量采用深色高对比度，解决灰色看不清的问题：
             // IPv6 采用 Deep Teal 森林深绿 Color.FromArgb(4,120,87)
             // IPv4 采用 Solid Dark Slate 深黑灰 Color.FromArgb(30,41,59)
@@ -161,9 +161,9 @@ internal sealed class DownloadForm : Form
 
             // 卡片底栏
             var footer=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};
-            footer.ColumnStyles.Add(new(SizeType.Percent,65));footer.ColumnStyles.Add(new(SizeType.Percent,35));
-            var server=new Label{Text=site.Id=="global"?"全局双栈优先路由":"主服务器：尚未发现",Font=new Font("Microsoft YaHei UI",9),ForeColor=Color.FromArgb(71,85,105),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
-            var state=new Label{Text="原连接方式",Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=Color.FromArgb(51,65,85),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight,AutoEllipsis=true};
+            footer.ColumnStyles.Add(new(SizeType.Percent,62));footer.ColumnStyles.Add(new(SizeType.Percent,38));
+            var server=new Label{Text=site.Id=="global"?"全局双栈优先路由":"主服务器：尚未发现",Font=new Font("Microsoft YaHei UI",10.5f),ForeColor=Color.FromArgb(71,85,105),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
+            var state=new Label{Text="原连接方式",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(51,65,85),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight,AutoEllipsis=true};
             footer.Controls.Add(server,0,0);footer.Controls.Add(state,1,0);card.Controls.Add(footer);
 
             cardGrid.Controls.Add(card);
@@ -175,7 +175,7 @@ internal sealed class DownloadForm : Form
         hint.ForeColor=Color.FromArgb(51,65,85);root.Controls.Add(hint);
 
         // 6. 底栏安全声明
-        var secFooter=new Label{Text="安全声明：已接管大型下载严格仅允许 IPv6；若节点不可达将阻断请求，防止偷跑 IPv4 计费流量。退出自动还原系统路由与网络设置。",Font=new Font("Microsoft YaHei UI",8.5f),ForeColor=Color.FromArgb(100,116,139),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
+        var secFooter=new Label{Text="安全声明：已接管大型下载严格仅允许 IPv6；若节点不可达将阻断请求，防止偷跑 IPv4 计费流量。退出自动还原系统路由与网络设置。",Font=new Font("Microsoft YaHei UI",9.5f),ForeColor=Color.FromArgb(100,116,139),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
         root.Controls.Add(secFooter);
 
         timer.Tick+=(_,_)=>RefreshCards();
@@ -186,23 +186,34 @@ internal sealed class DownloadForm : Form
     }
 
     static TrafficColumn BuildProtocolBox(TableLayoutPanel parent,int col,string title,Label? extra,Color bg,Color headerCol,Color totalCol){
-        var p=new Panel{Dock=DockStyle.Fill,BackColor=bg,Padding=new Padding(10,8,10,8),Margin=new Padding(3,0,3,0)};
-        var tl=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=5,ColumnCount=1,Margin=Padding.Empty};
-        tl.RowStyles.Add(new(SizeType.Absolute,22));tl.RowStyles.Add(new(SizeType.Percent,25));tl.RowStyles.Add(new(SizeType.Percent,25));tl.RowStyles.Add(new(SizeType.Percent,25));tl.RowStyles.Add(new(SizeType.Percent,25));
+        var p=new Panel{Dock=DockStyle.Fill,BackColor=bg,Padding=new Padding(12,8,12,8),Margin=new Padding(3,0,3,0)};
+        var tl=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=3,ColumnCount=1,Margin=Padding.Empty};
+        tl.RowStyles.Add(new(SizeType.Absolute,28));tl.RowStyles.Add(new(SizeType.Percent,50));tl.RowStyles.Add(new(SizeType.Percent,50));
 
         var top=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=extra!=null?2:1,RowCount=1,Margin=Padding.Empty};
         top.RowStyles.Add(new(SizeType.Percent,100));
         if(extra!=null){top.ColumnStyles.Add(new(SizeType.Percent,62));top.ColumnStyles.Add(new(SizeType.Percent,38));}
-        var h=new Label{Text=title,Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=headerCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
+        var h=new Label{Text=title,Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold),ForeColor=headerCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
         top.Controls.Add(h,0,0);
         if(extra!=null)top.Controls.Add(extra,1,0);
         tl.Controls.Add(top,0,0);
 
-        var dr=new Label{Text="↓ 下载: 0 B/s",Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-        var dt=new Label{Text="  累计: 0 B",Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=totalCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-        var ur=new Label{Text="↑ 上传: 0 B/s",Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-        var ut=new Label{Text="  累计: 0 B",Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=totalCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-        tl.Controls.Add(dr,0,1);tl.Controls.Add(dt,0,2);tl.Controls.Add(ur,0,3);tl.Controls.Add(ut,0,4);
+        var downRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};
+        downRow.RowStyles.Add(new(SizeType.Percent,100));
+        downRow.ColumnStyles.Add(new(SizeType.Percent,50));downRow.ColumnStyles.Add(new(SizeType.Percent,50));
+        var dr=new Label{Text="↓ 0 B/s",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
+        var dt=new Label{Text="累计: 0 B",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=totalCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight,AutoEllipsis=true};
+        downRow.Controls.Add(dr,0,0);downRow.Controls.Add(dt,1,0);
+        tl.Controls.Add(downRow,0,1);
+
+        var upRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};
+        upRow.RowStyles.Add(new(SizeType.Percent,100));
+        upRow.ColumnStyles.Add(new(SizeType.Percent,50));upRow.ColumnStyles.Add(new(SizeType.Percent,50));
+        var ur=new Label{Text="↑ 0 B/s",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
+        var ut=new Label{Text="累计: 0 B",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=totalCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight,AutoEllipsis=true};
+        upRow.Controls.Add(ur,0,0);upRow.Controls.Add(ut,1,0);
+        tl.Controls.Add(upRow,0,2);
+
         p.Controls.Add(tl);parent.Controls.Add(p,col,0);
         return new TrafficColumn(dr,dt,ur,ut);
     }
