@@ -77,7 +77,22 @@ internal sealed class SplitRouting
     {
         var network=await Task.Run(ClashNetworkProbe.Read).ConfigureAwait(false);var lease=ReadLease();
         using var api=Client();
-        if(lease==null){await Get(api,"configs").ConfigureAwait(false);return new(network,false,false,"开启后自动调整有线优先，无需手动设置。");}
+        if(lease==null){
+            try{
+                var cfg=await Get(api,"configs").ConfigureAwait(false);
+                using var doc=JsonDocument.Parse(cfg);
+                bool wifiBound=doc.RootElement.TryGetProperty("interface-name",out var iface)&&
+                    !string.IsNullOrEmpty(network.WifiName)&&
+                    string.Equals(iface.GetString(),network.WifiName,StringComparison.OrdinalIgnoreCase);
+                if(wifiBound){
+                    string msg=network.EthernetConnected
+                        ? $"已绑定无线网（{network.WifiName}）：反重力及代理走 Wi-Fi，普通直连走有线。"
+                        : $"已绑定无线网（{network.WifiName}）：反重力及代理流量严格优先走 Wi-Fi。";
+                    return new(network,false,true,msg);
+                }
+            }catch{}
+            return new(network,false,false,"开启后自动调整有线优先，代理流量走 Wi-Fi。");
+        }
         bool applied=false;
         try {
             using var doc=JsonDocument.Parse(await Get(api,"configs").ConfigureAwait(false));
@@ -85,6 +100,26 @@ internal sealed class SplitRouting
         }catch{return new(network,true,false,"Clash 暂不可达；恢复记录已保留，点击恢复默认。");}
         bool active=applied&&network.CanEnable;
         return new(network,true,active,active?"代理节点走 Wi-Fi；DIRECT 与普通直连优先走有线。":"网卡或 Clash 配置已变化；点击恢复默认后重新开启。");
+    }
+    internal async Task SetWifiBindingOnlyAsync(string wifiName)
+    {
+        using var api=Client();
+        using var request=new HttpRequestMessage(new HttpMethod("PATCH"),"configs")
+        {
+            Content=new StringContent(JsonSerializer.Serialize(new Dictionary<string,string>{["interface-name"]=wifiName}),Encoding.UTF8,"application/json")
+        };
+        using var response=await api.SendAsync(request).ConfigureAwait(false);
+        if(!response.IsSuccessStatusCode)throw new InvalidOperationException($"Clash Verge 接口设置失败（HTTP {(int)response.StatusCode}）");
+    }
+    internal async Task ClearWifiBindingAsync()
+    {
+        using var api=Client();
+        using var request=new HttpRequestMessage(new HttpMethod("PATCH"),"configs")
+        {
+            Content=new StringContent(JsonSerializer.Serialize(new Dictionary<string,string>{["interface-name"]=""}),Encoding.UTF8,"application/json")
+        };
+        using var response=await api.SendAsync(request).ConfigureAwait(false);
+        if(!response.IsSuccessStatusCode)throw new InvalidOperationException($"Clash Verge 接口恢复失败（HTTP {(int)response.StatusCode}）");
     }
     internal Task EnableAsync()=>Task.Run(()=>Locked(()=>{Enable();return true;}));
     internal Task FailForTestAsync(string point)=>Task.Run(()=>Locked(()=>{Enable(point);return true;}));

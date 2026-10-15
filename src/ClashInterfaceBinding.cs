@@ -30,6 +30,9 @@ internal sealed record ClashNetworkSnapshot(
         (WifiIpv4Metric.HasValue || WifiIpv6Metric.HasValue) &&
         EthernetFirstIpv4 && EthernetFirstIpv6;
 
+    public bool DualNicReady => CanEnable;
+    public bool WifiReady => WifiConnected && (WifiIpv4Metric.HasValue || WifiIpv6Metric.HasValue);
+
     public string EnableBlockReason
     {
         get
