@@ -34,10 +34,15 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--clash-interface-probe") { ClashInterfaceTests.Probe(args[1]);return; }
         if (args.Length == 2 && args[0] == "--clash-interface-core-test") { ClashInterfaceTests.CoreTest(args[1]);return; }
         if (args.Length > 0 && args[0] == "--ipv4-guard") { Ipv4Guard.Run(args); return; }
+        if(args.Length==3&&args[0]=="--split-watch"){SplitRouting.Watch(int.Parse(args[1]),long.Parse(args[2]));return;}
+        if(args.Length==2&&args[0]=="--split-test"){SplitRoutingTests.Run(args[1]);return;}
+        if(args.Length==2&&args[0]=="--split-live-test"){SplitRoutingTests.Live(args[1]);return;}
+        if(args.Length==2&&args[0]=="--split-owner-test"){SplitRoutingTests.Owner(args[1]);return;}
         ApplicationConfiguration.Initialize();
         bool uiSmoke=args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";
         bool uiNative=args.Length==2&&args[0]=="--ui-native-test";
         if(!uiSmoke&&args.Length==0&&!Admin){try{Process.Start(new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=true,Verb="runas"});}catch{MessageBox.Show("未开启网络接管。Steam/Epic 接管需要管理员权限。");}return;}
+        if(!uiSmoke){try{SplitRouting.RecoverStale();}catch(Exception ex){MessageBox.Show("上次分流恢复未完成："+ex.Message);return;}}
         var form=new DownloadForm(uiSmoke);
         if(uiSmoke||uiNative) {
             form.ShowInTaskbar=false;form.Opacity=0;

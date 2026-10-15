@@ -24,4 +24,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 来源：https://github.com/MetaCubeX/mihomo/tree/v1.19.10
 源码归档：https://codeload.github.com/MetaCubeX/mihomo/zip/refs/tags/v1.19.10
-没有复制或修改用户 Clash 配置、订阅、API 密钥。未复制其他闭源 CDN 工具的实现。
+3.0.8 的分流功能只热重载用户 Clash 运行配置，不改写订阅文件；本机恢复快照采用 Windows DPAPI 加密，不上传用户配置或 API 密钥。未复制其他闭源 CDN 工具的实现。
+
+## YamlDotNet 16.3.0
+
+Used to preserve structured Clash configuration during runtime splitting.
+Source: https://github.com/aaubry/YamlDotNet/tree/v16.3.0
+License: MIT (the permission and disclaimer text above also applies).
+Copyright (c) Antoine Aubry and contributors
