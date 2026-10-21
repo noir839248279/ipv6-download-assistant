@@ -47,7 +47,7 @@ internal static class Program
         if(uiSmoke||uiNative) {
             form.ShowInTaskbar=false;form.Opacity=0;
             var timer=new System.Windows.Forms.Timer {Interval=uiNative?12000:3500};
-            timer.Tick+=(_,_)=> {timer.Stop();if(args[0]=="--ui-smoke-loss")form.SimulateOwnershipLoss();if(args[0]=="--ui-smoke-split")form.PreviewClashBinding();using var bitmap=new Bitmap(form.Width,form.Height);form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(args[1]);File.WriteAllText(args[1]+".json",System.Text.Json.JsonSerializer.Serialize(new{defaultsActive=form.DefaultsActive,services=DownloadRouter.Sites.Length}));form.Close();timer.Dispose();};
+            timer.Tick+=(_,_)=> {timer.Stop();if(args[0]=="--ui-smoke-loss")form.SimulateOwnershipLoss();if(args[0]=="--ui-smoke-split")form.PreviewClashBinding();using var bitmap=new Bitmap(form.Width,form.Height);form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(args[1]);File.WriteAllText(args[1]+".json",System.Text.Json.JsonSerializer.Serialize(new{defaultsActive=form.DefaultsActive,splitActive=form.SplitActive,services=DownloadRouter.Sites.Length}));form.Close();timer.Dispose();};
             form.Shown+=(_,_)=>timer.Start();
         }
         Application.Run(form);

@@ -3,6 +3,7 @@
 !/README.md
 !/AGENTS.md
 !/build.ps1
+!/package.ps1
 !/THIRD-PARTY-NOTICES.md
 !/src/
 !/src/*.cs

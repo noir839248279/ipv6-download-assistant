@@ -40,10 +40,11 @@ internal sealed class DownloadForm : Form
     readonly Label clashStatus=Label("启动 Clash Verge 后自动读取状态。",10.5f);
     bool busy,closing,closeReady,lossNotified,clashBusy;readonly bool testMode;Task startup=Task.CompletedTask,clashWork=Task.CompletedTask;
     internal bool DefaultsActive=>router!=null&&(testMode||native?.Active==true)&&!router.ProtectionLost&&cards.Values.All(c=>c.Switch.Checked)&&router.Counters.Values.All(c=>c.Enabled);
+    internal bool SplitActive=>clashToggle.Checked;
     public DownloadForm(bool testMode=false){
         Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         this.testMode=testMode;
-        Text="IPv6 下载助手 3.0.9";Width=1560;Height=1080;MinimumSize=new(1360,960);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(243,246,250);
+        Text="IPv6 下载助手 3.0.10";Width=1560;Height=1080;MinimumSize=new(1360,960);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(243,246,250);
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(20,12,20,12),RowCount=6,ColumnCount=1};Controls.Add(root);
         root.RowStyles.Add(new(SizeType.Absolute,74));
         root.RowStyles.Add(new(SizeType.Absolute,106));
@@ -63,7 +64,7 @@ internal sealed class DownloadForm : Form
         titleBox.RowStyles.Add(new(SizeType.Absolute,40));titleBox.RowStyles.Add(new(SizeType.Percent,100));
         var titleRow=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty};
         titleRow.Controls.Add(new Label{Text="IPv6 下载助手",Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),AutoSize=true,Margin=new Padding(0,0,10,0)});
-        var verBadge=new Label{Text="v3.0.9",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,6,0,0)};
+        var verBadge=new Label{Text="v3.0.10",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,6,0,0)};
         titleRow.Controls.Add(verBadge);titleBox.Controls.Add(titleRow,0,0);
         network.ForeColor=Color.FromArgb(71,85,105);network.AutoEllipsis=true;network.Margin=Padding.Empty;titleBox.Controls.Add(network,0,1);
         header.Controls.Add(titleBox,1,0);
@@ -295,13 +296,6 @@ internal sealed class DownloadForm : Form
         }
         if(!closing){
             await RefreshClashBinding();
-            try{
-                var s=await clashBinding.ReadAsync();
-                if(!s.Active && s.Network.WifiConnected){
-                    await clashBinding.SetWifiBindingOnlyAsync(s.Network.WifiName);
-                    await RefreshClashBinding();
-                }
-            }catch{}
             clashToggle.Enabled=true;
             clashTimer.Start();
         }
@@ -404,7 +398,7 @@ internal sealed class DownloadForm : Form
         if(native!=null){await native.DisposeAsync();native=null;}
         if(router!=null){await router.DisposeAsync();router=null;}
     }
-    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.9",timeUtc=DateTime.UtcNow,
+    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.10",timeUtc=DateTime.UtcNow,
         protectionLost=router?.ProtectionLost,nativeCapture=native?.Active??false,network=network.Text,
         nativeExitCode=native?.ExitCode,routerHealth=router?.Health(),
         scope="Sent and received relay stream bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",
