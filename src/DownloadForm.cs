@@ -30,7 +30,7 @@ internal sealed class DownloadForm : Form
         }
     }
     readonly Dictionary<string, CardView> cards=new();
-    readonly Label network=Label("正在检查 IPv6 网络…",11), hint=Label("打开对应开关，再重新开始下载或刷新视频。",10.5f);
+    readonly Label network=Label("正在检测 IPv4 / IPv6 网络连接…",11), hint=Label("开启对应分类后，重新开始下载或刷新视频。",10.5f);
     readonly Label gV6Down=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gV6Up=Label("↑ 上传: 0 B/s (累计 0 B)",11f), gV6Share=Label("0.0%",11.5f);
     readonly Label gV4Down=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gV4Up=Label("↑ 上传: 0 B/s (累计 0 B)",11f);
     readonly Label gProxyDown=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gProxyUp=Label("↑ 上传: 0 B/s (累计 0 B)",11f);
@@ -44,7 +44,7 @@ internal sealed class DownloadForm : Form
     public DownloadForm(bool testMode=false){
         Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         this.testMode=testMode;
-        Text="IPv6 下载助手 3.0.10";Width=1560;Height=1080;MinimumSize=new(1360,960);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(243,246,250);
+        Text="IPv6 下载助手 3.0.11";Width=1560;Height=1080;MinimumSize=new(1360,960);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(243,246,250);
         var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(20,12,20,12),RowCount=6,ColumnCount=1};Controls.Add(root);
         root.RowStyles.Add(new(SizeType.Absolute,74));
         root.RowStyles.Add(new(SizeType.Absolute,106));
@@ -64,7 +64,7 @@ internal sealed class DownloadForm : Form
         titleBox.RowStyles.Add(new(SizeType.Absolute,40));titleBox.RowStyles.Add(new(SizeType.Percent,100));
         var titleRow=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty};
         titleRow.Controls.Add(new Label{Text="IPv6 下载助手",Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),AutoSize=true,Margin=new Padding(0,0,10,0)});
-        var verBadge=new Label{Text="v3.0.10",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,6,0,0)};
+        var verBadge=new Label{Text="v3.0.11",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,6,0,0)};
         titleRow.Controls.Add(verBadge);titleBox.Controls.Add(titleRow,0,0);
         network.ForeColor=Color.FromArgb(71,85,105);network.AutoEllipsis=true;network.Margin=Padding.Empty;titleBox.Controls.Add(network,0,1);
         header.Controls.Add(titleBox,1,0);
@@ -76,7 +76,7 @@ internal sealed class DownloadForm : Form
             b.FlatAppearance.BorderColor=Color.FromArgb(203,213,225);
             b.Click+=(_,_)=>{if(!clashBusy)run();};actions.Controls.Add(b);
         }
-        Button("使用说明",()=>MessageBox.Show("默认全部开启：普通网站优先直连 IPv6，失败后允许 IPv4／原代理；内容下载仅允许 IPv6，不可达则失败。\n\n夸克已知登录接口归入其他网站。Bilibili/YouTube 只按视频 CDN 计数，不把整个浏览器算进去。Steam/Epic 使用独立 Mihomo 内核接管 HTTP/HTTPS；登录也可能受限制。第三方代理内的目的流量无法可靠还原。\n\n流量分流开关自动设置有线默认路由优先，将 Clash 代理节点及提供器绑定 Wi-Fi，DIRECT 绑定有线。关闭或退出恢复原设置，异常退出由守护进程恢复。需连接两张网卡并使用 Clash 规则模式，原有 TUN 自动临时停用并恢复；不修改订阅文件。热重载需数秒，已有连接需重新建立；第三方 VPN、特定路由及另行绑定网卡的软件不在保证范围。\n\n开关是策略，不代表当前已下载。以实际速度、累计与主服务器判断；代理出口协议未知的字节不算 IPv6。\n\n请暂停旧下载再启动新下载。关闭开关、退出或接管失效后可能恢复 IPv4。本工具不是整机 IPv4 防火墙。\n\n退出自动保存脱敏报告，不记录 URL、Cookie、Token、文件名或普通网页域名。",Text));
+        Button("使用说明",()=>MessageBox.Show(this,UsageText,"使用说明"));
         Button("详细诊断",()=>{using var detail=new MainForm();detail.ShowDialog(this);});
         Button("导出报告",Export);
         Button("清零流量",()=>router?.Reset());
@@ -85,12 +85,12 @@ internal sealed class DownloadForm : Form
         root.Controls.Add(header);
 
         // 2. Hero Card: 双网卡智能分流卡片 (加高至 118px，大字清晰排版)
-        var hero=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,BackColor=Color.FromArgb(15,23,42),Padding=new Padding(22,12,22,12),Margin=new Padding(0,4,0,6)};
+        var hero=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,BackColor=Color.FromArgb(15,23,42),Padding=new Padding(22,8,22,8),Margin=new Padding(0,4,0,6)};
         hero.RowStyles.Add(new(SizeType.Percent,100));
         hero.ColumnStyles.Add(new(SizeType.Percent,66));hero.ColumnStyles.Add(new(SizeType.Percent,34));
         var heroLeft=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=2,ColumnCount=1,Margin=Padding.Empty};
-        heroLeft.RowStyles.Add(new(SizeType.Absolute,32));heroLeft.RowStyles.Add(new(SizeType.Percent,100));
-        var heroTitle=new Label{Text="🔀 双网卡自动分流：代理走 Wi-Fi / 直连走有线",Font=new Font("Microsoft YaHei UI",13f,FontStyle.Bold),ForeColor=Color.White,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
+        heroLeft.RowStyles.Add(new(SizeType.Absolute,26));heroLeft.RowStyles.Add(new(SizeType.Percent,100));
+        var heroTitle=new Label{Text="🔀 有线 / Wi-Fi 分流",Font=new Font("Microsoft YaHei UI",13f,FontStyle.Bold),ForeColor=Color.White,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
         heroLeft.Controls.Add(heroTitle,0,0);
         clashStatus.ForeColor=Color.FromArgb(203,213,225);clashStatus.AutoEllipsis=true;clashStatus.TextAlign=ContentAlignment.TopLeft;heroLeft.Controls.Add(clashStatus,0,1);
         hero.Controls.Add(heroLeft,0,0);
@@ -116,8 +116,8 @@ internal sealed class DownloadForm : Form
             line2.Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold);line2.ForeColor=Color.FromArgb(51,65,85);line2.Dock=DockStyle.Fill;line2.TextAlign=ContentAlignment.MiddleLeft;
             tl.Controls.Add(line1,0,1);tl.Controls.Add(line2,0,2);p.Controls.Add(tl);return p;
         }
-        globalStrip.Controls.Add(GlobalCard("🟢 IPv6 公网直连 (免流主力)",gV6Down,gV6Up,gV6Share,Color.FromArgb(236,253,245),Color.FromArgb(167,243,208),Color.FromArgb(6,95,70)),0,0);
-        globalStrip.Controls.Add(GlobalCard("⚪ IPv4 常规直连 (不可达回退)",gV4Down,gV4Up,null,Color.FromArgb(248,250,252),Color.FromArgb(226,232,240),Color.FromArgb(51,65,85)),1,0);
+        globalStrip.Controls.Add(GlobalCard("🟢 IPv6 流量",gV6Down,gV6Up,gV6Share,Color.FromArgb(236,253,245),Color.FromArgb(167,243,208),Color.FromArgb(6,95,70)),0,0);
+        globalStrip.Controls.Add(GlobalCard("⚪ IPv4 流量",gV4Down,gV4Up,null,Color.FromArgb(248,250,252),Color.FromArgb(226,232,240),Color.FromArgb(51,65,85)),1,0);
         globalStrip.Controls.Add(GlobalCard("🟡 未知",gProxyDown,gProxyUp,null,Color.FromArgb(254,243,199),Color.FromArgb(253,230,138),Color.FromArgb(146,64,14)),2,0);
         root.Controls.Add(globalStrip);
 
@@ -168,7 +168,7 @@ internal sealed class DownloadForm : Form
             stateRow.RowStyles.Add(new(SizeType.Percent,100));
             stateRow.ColumnStyles.Add(new(SizeType.Percent,64));stateRow.ColumnStyles.Add(new(SizeType.Percent,36));
             var state=new Label{Text="原连接方式",Font=new Font("Microsoft YaHei UI",10f,FontStyle.Bold),ForeColor=Color.FromArgb(51,65,85),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
-            var secBadge=new Label{Text=site.Id=="global"?"双栈优先 · 直连保护":"仅 IPv6 · 阻断保护",Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),ForeColor=Color.FromArgb(4,120,87),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight};
+            var secBadge=new Label{Text=site.Id=="global"?"IPv6 优先 · 允许回退":"仅 IPv6 · 内容连接",Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),ForeColor=Color.FromArgb(4,120,87),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight};
             stateRow.Controls.Add(state,0,0);stateRow.Controls.Add(secBadge,1,0);
             footer.Controls.Add(server,0,0);footer.Controls.Add(stateRow,0,1);card.Controls.Add(footer);
 
@@ -181,7 +181,7 @@ internal sealed class DownloadForm : Form
         hint.ForeColor=Color.FromArgb(51,65,85);root.Controls.Add(hint);
 
         // 6. 底栏安全声明
-        var secFooter=new Label{Text="安全声明：已接管大型下载严格仅允许 IPv6；若节点不可达将阻断请求，防止偷跑 IPv4 计费流量。退出自动还原系统路由与网络设置。",Font=new Font("Microsoft YaHei UI",9.5f),ForeColor=Color.FromArgb(100,116,139),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
+        var secFooter=new Label{Text="统计范围：经过助手的连接。退出前请暂停下载；仅 Wi-Fi 绑定需手动解除。",Font=new Font("Microsoft YaHei UI",9.5f),ForeColor=Color.FromArgb(100,116,139),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
         root.Controls.Add(secFooter);
 
         timer.Tick+=(_,_)=>RefreshCards();
@@ -292,7 +292,7 @@ internal sealed class DownloadForm : Form
             var result=await Diagnostics.Network();
             if(!closing)network.Text=result.Verdict;
         }catch{
-            if(!closing)network.Text="IPv6 检测未完成；开启后以实际连接为准";
+            if(!closing)network.Text="直连检测未完成，请查看实际连接流量";
         }
         if(!closing){
             await RefreshClashBinding();
@@ -316,7 +316,7 @@ internal sealed class DownloadForm : Form
         clashToggle.Checked=active;
         clashToggle.BackColor=active?Color.FromArgb(52,211,153):state.Managed?Color.FromArgb(251,191,36):Color.FromArgb(241,245,249);
         clashToggle.ForeColor=active?Color.FromArgb(15,23,42):state.Managed?Color.FromArgb(15,23,42):Color.FromArgb(30,41,59);
-        clashToggle.Text=active?"📶 代理已走 Wi-Fi：反重力及代理流量锁定无线":state.Managed?"⚠ 分流需要恢复 · 点击恢复默认":"🔀 开启分流：反重力代理走 Wi-Fi / 直连走有线";
+        clashToggle.Text=active?(state.Managed?"📶 分流已开启：代理 Wi-Fi / 直连有线":"📶 仅 Wi-Fi 绑定：已开启"):state.Managed?"⚠ 分流状态已变化，点击恢复默认":"🔀 双网卡分流：已关闭";
         clashToggle.Enabled=true;
         string wired=state.Network.EthernetConnected?"有线在线":"有线未连接";
         string wifi=state.Network.WifiConnected?$"Wi-Fi 在线 ({state.Network.WifiName})":"Wi-Fi 未连接";
@@ -329,7 +329,7 @@ internal sealed class DownloadForm : Form
             bool hasLease=SplitRouting.ReadLease()!=null;
             var current=await clashBinding.ReadAsync();
             if(hasLease){
-                clashToggle.Text="正在恢复原路由和 Clash 设置…";
+                clashToggle.Text="正在恢复分流前的网络设置…";
                 clashStatus.Text="请等待校验完成；已有连接可能需要重新建立。";
                 if(SplitRouting.RestoresTun){await SetAll(false);hint.Text="将恢复 Clash 原有 TUN 模式；助手下载接管已暂停，避免两套接管冲突。";}
                 await clashBinding.RestoreAsync();
@@ -337,7 +337,7 @@ internal sealed class DownloadForm : Form
                 clashToggle.Text="正在恢复默认网卡绑定…";
                 await clashBinding.ClearWifiBindingAsync();
             }else{
-                clashToggle.Text="正在将代理绑定至 Wi-Fi…";
+                clashToggle.Text="正在启用 Wi-Fi 分流…";
                 if(current.Network.WifiConnected){
                     if(current.Network.DualNicReady && Program.Admin){
                         await clashBinding.EnableAsync();
@@ -357,7 +357,7 @@ internal sealed class DownloadForm : Form
     }
     void PaintSwitch(string id,bool on){
         var c=cards[id];c.State.ForeColor=Color.FromArgb(30,41,59);c.Switch.Checked=on;
-        c.Switch.Text=(id=="global"?"IPv6 优先":"仅 IPv6 下载")+(on?"：开":"：关");
+        c.Switch.Text=(id=="global"?"IPv6 优先":"仅 IPv6")+(on?"：开":"：关");
         c.Switch.BackColor=on?Color.FromArgb(167,243,208):Color.FromArgb(241,245,249);
         c.Switch.ForeColor=on?Color.FromArgb(6,95,70):Color.FromArgb(71,85,105);
     }
@@ -371,7 +371,7 @@ internal sealed class DownloadForm : Form
             if(router!=null){if(on)router.EnableAll();else {await StopRouting();lossNotified=false;}}
             foreach(var id in cards.Keys){PaintSwitch(id,on);if(!on)cards[id].State.Text="未保护：已允许 IPv4／原代理";}
             hint.ForeColor=Color.FromArgb(30,41,59);
-            hint.Text=on?"已开启：网站 IPv6 优先；已接管下载仅 IPv6。请暂停后重启下载，已有连接不保证迁移。":"全部已关闭，允许 IPv4／原代理。请暂停下载以免继续消耗额度。";
+            hint.Text=on?"已开启：网站 IPv6 优先，内容下载仅 IPv6。请暂停后重新开始下载或刷新视频。":"全部分类已关闭，新连接使用系统或原代理路径；继续下载可能消耗 IPv4 额度。";
         }catch(Exception ex){await StopRouting();foreach(var id in cards.Keys)PaintSwitch(id,false);hint.Text="未开启："+ex.Message;}
         finally{busy=false;if(!closing)foreach(var c in cards.Values)c.Switch.Enabled=true;}
     }
@@ -384,7 +384,7 @@ internal sealed class DownloadForm : Form
             if(router==null&&on)await StartRouting(id);
             if(closing)return;
             router?.Enable(id,on);PaintSwitch(id,on);
-            hint.Text=on?"已开启仅 IPv6：接管的请求禁止回落；已有直连需重新建立连接，数字仅统计助手流量。":"已允许该服务使用 IPv4／原代理，可能消耗额度。";
+            hint.Text=on?(id=="global"?"已开启 IPv6 优先，不可用时尝试 IPv4 或原代理。请重新建立连接。":"已开启仅 IPv6 下载，不可用时请求会失败。请暂停后重新开始下载。"):"该分类已关闭，新连接可以使用 IPv4 或原代理。";
         }catch(Exception ex){await StopRouting();foreach(var key in cards.Keys)PaintSwitch(key,false);cards[id].State.Text="未开启："+ex.Message;hint.Text=ex.Message;}
         finally{busy=false;if(!closing)foreach(var c in cards.Values)c.Switch.Enabled=true;}
     }
@@ -398,7 +398,24 @@ internal sealed class DownloadForm : Form
         if(native!=null){await native.DisposeAsync();native=null;}
         if(router!=null){await router.DisposeAsync();router=null;}
     }
-    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.10",timeUtc=DateTime.UtcNow,
+    const string UsageText="""
+        快速上手
+        先暂停现有下载，打开助手，再重新开始下载或刷新视频。看对应分类的实际速度、累计流量和主要服务器。
+
+        分类开关
+        六个分类默认开启。其他网站优先 IPv6，失败后尝试 IPv4 或原代理。五个下载和视频分类仅使用 IPv6；内容服务器没有可用 IPv6 时请求会失败，可关闭对应开关后重试。登录和列表等请求仍可能使用 IPv4，已有连接需暂停重开。
+
+        流量统计
+        IPv6、IPv4、未知均显示下载和上传。未知表示经原有代理等路径转发，无法确认最终出口协议。IPv6 占比仅按下载计算，未知也计入总量；绕过助手的连接不计入面板。
+
+        有线 / Wi-Fi 分流
+        默认关闭，手动开启。完整分流将普通直连和 DIRECT 放在有线，代理节点放在 Wi-Fi；关闭或退出时恢复，异常退出由恢复进程处理。
+        若界面显示“仅 Wi-Fi 绑定”，DIRECT 也会受影响；需再次点击解除绑定，退出不会自动清除。
+
+        退出与诊断
+        退出前先暂停下载，恢复原路径后可能使用 IPv4。连接异常时可导出 JSON 报告，包含平台 CDN 域名、流量与接管状态，不记录 URL、Cookie、Token 或文件名。
+        """;
+    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.11",timeUtc=DateTime.UtcNow,
         protectionLost=router?.ProtectionLost,nativeCapture=native?.Active??false,network=network.Text,
         nativeExitCode=native?.ExitCode,routerHealth=router?.Health(),
         scope="Sent and received relay stream bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",

@@ -85,9 +85,7 @@ internal sealed class SplitRouting
                     !string.IsNullOrEmpty(network.WifiName)&&
                     string.Equals(iface.GetString(),network.WifiName,StringComparison.OrdinalIgnoreCase);
                 if(wifiBound){
-                    string msg=network.EthernetConnected
-                        ? $"已绑定无线网（{network.WifiName}）：反重力及代理走 Wi-Fi，普通直连走有线。"
-                        : $"已绑定无线网（{network.WifiName}）：反重力及代理流量严格优先走 Wi-Fi。";
+                    string msg=$"仅绑定 Wi-Fi（{network.WifiName}），DIRECT 也受影响；再次点击解除，退出不会自动清除。";
                     return new(network,false,true,msg);
                 }
             }catch{}

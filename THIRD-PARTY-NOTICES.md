@@ -20,11 +20,15 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Mihomo
 
-本包复用本机已安装 Clash Verge 的 Mihomo Meta v1.19.10 Windows amd64 内核，未修改二进制，通过独立进程及本地 HTTP API 工作。GPL-3.0 许可证和对应官方版本源码归档见 third-party/。
+本软件通过独立的 `core/mihomo.exe` 进程完成本地网络接管与规则分流，主程序通过本地配置和控制接口与内核通信。
+
+发布包使用 Mihomo Meta v1.19.10（Windows amd64），未修改内核二进制。Mihomo 采用 GNU General Public License v3.0（GPL-3.0）授权。完整许可证见 `third-party/mihomo-LICENSE.txt`，该版本的官方源码归档见 `third-party/mihomo-v1.19.10-source.zip`。
 
 来源：https://github.com/MetaCubeX/mihomo/tree/v1.19.10
 源码归档：https://codeload.github.com/MetaCubeX/mihomo/zip/refs/tags/v1.19.10
-3.0.8 的分流功能只热重载用户 Clash 运行配置，不改写订阅文件；本机恢复快照采用 Windows DPAPI 加密，不上传用户配置或 API 密钥。未复制其他闭源 CDN 工具的实现。
+双网卡分流热重载本机运行配置，不改写订阅文件。恢复记录保存在当前电脑，使用当前 Windows 用户的 DPAPI 加密，用于还原网络设置，不随诊断报告导出。
+
+主程序还使用 YamlDotNet 16.3.0、Microsoft.Diagnostics.Tracing.TraceEvent 3.1.28 和 .NET 10。各组件的来源与许可见本文件相应条目。
 
 ## YamlDotNet 16.3.0
 

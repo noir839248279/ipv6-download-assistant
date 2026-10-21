@@ -11,7 +11,7 @@ public record NetworkReport(DateTime Time,int GlobalV6,int V4,List<string> Inter
     public string Verdict {
         get {
             bool a=Probes.Any(x=>x.Family=="IPv4" && x.Success), b=Probes.Any(x=>x.Family=="IPv6" && x.Success);
-            return a&&b?"IPv4 / IPv6 双栈直连验证成功":b?"IPv6 直连验证成功；IPv4 探测未成功":a?"IPv4 正常；IPv6 直连探测未成功":"直连探测未成功，不能仅凭此判定整个网络故障";
+            return a&&b?"IPv4 / IPv6 双栈直连检测正常":b?"IPv6 直连检测正常；IPv4 探测未成功":a?"IPv4 直连检测正常；IPv6 探测未成功":"直连检测未成功，请查看详细诊断和实际流量";
         }
     }
 }
