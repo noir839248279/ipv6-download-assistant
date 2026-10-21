@@ -23,7 +23,7 @@
 
 ## 界面上的数据怎么看
 
-主界面分为**其他网站、夸克网盘、Bilibili、YouTube、Steam、Epic Games**六个分类。每个分类都有三栏上下行速度和累计流量：
+主界面分为**其他网站、夸克网盘、Bilibili、YouTube、Steam、Epic Games**六个分类。每个分类都有三栏上下行速度和累计流量：(仅测试bilibili，夸克，steam)
 
 - **IPv6**：助手通过 IPv6 对外连接时中继的数据。
 - **IPv4**：助手通过 IPv4 对外连接时中继的数据。
