@@ -118,7 +118,7 @@ internal sealed class DownloadForm : Form
         }
         globalStrip.Controls.Add(GlobalCard("🟢 IPv6 公网直连 (免流主力)",gV6Down,gV6Up,gV6Share,Color.FromArgb(236,253,245),Color.FromArgb(167,243,208),Color.FromArgb(6,95,70)),0,0);
         globalStrip.Controls.Add(GlobalCard("⚪ IPv4 常规直连 (不可达回退)",gV4Down,gV4Up,null,Color.FromArgb(248,250,252),Color.FromArgb(226,232,240),Color.FromArgb(51,65,85)),1,0);
-        globalStrip.Controls.Add(GlobalCard("🟡 未知出口 (Clash 代理经 Wi-Fi)",gProxyDown,gProxyUp,null,Color.FromArgb(254,243,199),Color.FromArgb(253,230,138),Color.FromArgb(146,64,14)),2,0);
+        globalStrip.Controls.Add(GlobalCard("🟡 未知",gProxyDown,gProxyUp,null,Color.FromArgb(254,243,199),Color.FromArgb(253,230,138),Color.FromArgb(146,64,14)),2,0);
         root.Controls.Add(globalStrip);
 
         // 4. 6 大平台监控卡片 (字号加大，指标更清晰更易读)
@@ -157,7 +157,7 @@ internal sealed class DownloadForm : Form
             // 未知出口 采用 Deep Amber 浓郁琥珀棕 Color.FromArgb(146,64,14)
             var v6Col=BuildProtocolBox(metrics,0,"🟢 IPv6",shareLabel,Color.FromArgb(240,253,244),Color.FromArgb(6,95,70),Color.FromArgb(4,120,87));
             var v4Col=BuildProtocolBox(metrics,1,"⚪ IPv4",null,Color.FromArgb(248,250,252),Color.FromArgb(51,65,85),Color.FromArgb(30,41,59));
-            var unkCol=BuildProtocolBox(metrics,2,"🟡 未知 (Clash)",null,Color.FromArgb(255,251,235),Color.FromArgb(180,83,9),Color.FromArgb(146,64,14));
+            var unkCol=BuildProtocolBox(metrics,2,"🟡 未知",null,Color.FromArgb(255,251,235),Color.FromArgb(180,83,9),Color.FromArgb(146,64,14));
             card.Controls.Add(metrics);
 
             // 卡片底栏 (2 行清晰布局，彻底解决服务器域名与状态挤压省略号问题)
