@@ -185,13 +185,15 @@ internal sealed class DownloadRouter : IAsyncDisposable
         string? processSite=ProductionPolicies&&forcedSite==null?Processes.ProxyClientSite(client):null;
         if(processSite!=null)Interlocked.Increment(ref processAttributed);
         string host=url.IdnHost;var site=forcedSite??processSite??(ProductionPolicies?ContentSite(host):Classify(host))??"global";
+        bool originalControl=ProductionPolicies&&forcedSite==null&&processSite==null&&QuarkControls.Contains(host);
         var row=Counters[site];int id=Interlocked.Increment(ref connectionId);var session=new RelaySession(site,client);sessions[id]=session;
         bool responseStarted=false;string stage="connect";
         try{
             if(!CanServe(site))throw new IOException("代理设置失效");
             if(ContentTestHost!=null&&(ContentTestStopped||!host.Equals(ContentTestHost,StringComparison.OrdinalIgnoreCase)))throw new IOException("测试已停止或下载域名未验证，已拒绝连接");
             bool strict=row.Enabled&&!(ProductionPolicies&&site=="global");
-            var connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost,row,url.Scheme,handshake.Token,ProductionPolicies&&site=="global");using var upstream=connected.Client;var output=upstream.GetStream();
+            // Login, listing and link issuance must not inherit the unrelated global IPv6 preference.
+            var connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost&&!originalControl,row,url.Scheme,handshake.Token,ProductionPolicies&&site=="global"&&!originalControl);using var upstream=connected.Client;var output=upstream.GetStream();
             bool v6=((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.AddressFamily==AddressFamily.InterNetworkV6;
             strict=row.Enabled&&!(ProductionPolicies&&site=="global");
             if(!CanServe(site)||(ContentTestHost!=null&&ContentTestStopped)||(strict&&(!v6||connected.Proxy)))throw new IOException("路由策略已变更，拒绝原路径");

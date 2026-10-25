@@ -129,6 +129,35 @@ internal static class RelayPolicyTests
                     Check(router.Counters[site].V4 == 0 && router.Counters[site].Proxy == 0, "Half-close used fallback");
                 });
             }
+            await Case("Quark control APIs retain the original path independently of global and content switches", async () =>
+            {
+                await using var router = new DownloadRouter { ProductionPolicies = true };
+                await router.Start(false);
+                int contentQueries = 0, originalQueries = 0;
+                router.Resolve = _ =>
+                {
+                    Interlocked.Increment(ref contentQueries);
+                    return Task.FromResult(new[] { IPAddress.IPv6Loopback });
+                };
+                router.OriginalResolve = _ =>
+                {
+                    Interlocked.Increment(ref originalQueries);
+                    return Task.FromResult(new[] { IPAddress.Loopback });
+                };
+                router.Enable("global", true);
+                using var http = Client(router);
+                foreach (bool enabled in new[] { false, true })
+                {
+                    router.Enable("quark", enabled);
+                    Check(await http.GetStringAsync($"http://drive.quark.cn:{port}/") == "ok", "Control API unavailable");
+                    Check(contentQueries == 0 && originalQueries > 0, "Global preference still overrides Quark control traffic");
+                }
+                Check(router.Counters["quark"].V4 == 0 && router.Counters["quark"].V6 == 0, "Control bytes counted as content");
+                Check(await http.GetStringAsync($"http://dl-test.quark.cn:{port}/") == "ok" &&
+                    router.Counters["quark"].V6 > 0 && router.Counters["quark"].V4 == 0, "Enabled content lost strict IPv6");
+                Check(await http.GetStringAsync($"http://ordinary.example:{port}/") == "ok" &&
+                    router.Counters["global"].V6 > 0, "Unrelated global preference changed");
+            });
             await Case("Disabled service uses original proxy without content DNS or false IPv6 accounting", async () =>
             {
                 using var proxy = new TcpListener(IPAddress.Loopback, 0);
