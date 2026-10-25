@@ -53,7 +53,7 @@ internal static class RedirectTests
         await Reject($"http://refused.example:{refusedPort}/","IPv6 connection refusal cannot fall back to original proxy");
         Check(!proxyServing.IsCompleted&&!proxyServer.Pending(),"Original proxy is never contacted while strict mode is enabled");
         Check(DownloadRouter.Classify("evilquark.cn")==null&&DownloadRouter.Classify("cdn.quark.cn")=="quark","CDN suffix boundary is exact");
-        router.FallbackProxy="127.0.0.1:7897";router.Bypass="localhost;192.168.*";File.WriteAllText(path+".pac",router.Pac());Check(!router.Pac().Contains("PROXY 127.0.0.1:7897")&&router.Pac().Contains("192.168.*"),"PAC has no fallback to original proxy");
+        router.FallbackProxy="127.0.0.1:7897";router.Bypass="localhost;192.168.*";File.WriteAllText(path+".pac",router.Pac());Check(!router.Pac().Contains("; DIRECT")&&router.Pac().Contains("192.168.*"),"PAC never appends automatic DIRECT fallback to strict relay");
         router.Sample();Check(router.Counters["quark"].Rate6>0,"Actual relay counters produce IPv6 speed");router.Sample();Check(router.Counters["quark"].Rate6==0,"Idle relay speed resets");
         // Keep a CONNECT tunnel open, then simulate loss of system proxy ownership.
         using var tunnelClient=new TcpClient();await tunnelClient.ConnectAsync(IPAddress.Loopback,router.Port);var tunnelStream=tunnelClient.GetStream();await tunnelStream.WriteAsync(Encoding.ASCII.GetBytes($"CONNECT live.quark.cn:{port} HTTP/1.1\r\nHost: live.quark.cn:{port}\r\n\r\n"));

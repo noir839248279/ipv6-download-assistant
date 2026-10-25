@@ -37,8 +37,8 @@ internal sealed class ContentNodes
     {
         value = value.Trim().TrimEnd('.').ToLowerInvariant();
         if (value.Length > 253 || Uri.CheckHostName(value) != UriHostNameType.Dns ||
-            DownloadRouter.ContentSite(value) is not string site || site == "global")
-            throw new InvalidOperationException("请选择已识别的内容域名，不是登录或目录接口");
+            DownloadRouter.IsControlHost(value) || value.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("请输入有效的内容域名；登录、目录接口和本地域名不能测速");
         return value;
     }
     internal static bool PublicV6(IPAddress ip) => ip.AddressFamily == AddressFamily.InterNetworkV6 &&
@@ -91,8 +91,8 @@ internal sealed class ContentNodes
         {
             Prune(host);
             var row = hosts.GetValueOrDefault(host)?.SingleOrDefault(n => n.Dns.Address.Equals(ip));
-            if (row == null || !PublicV6(ip) || !row.LatencyMs.HasValue && !row.BytesPerSecond.HasValue)
-                throw new InvalidOperationException("节点已过期或未通过测试，请刷新并测试");
+            if (row == null || !PublicV6(ip))
+                throw new InvalidOperationException("节点已过期，请刷新节点");
             selected[host] = ip;
         }
     }
@@ -114,7 +114,7 @@ internal sealed class ContentNodes
         if (!Uri.TryCreate(text.Trim(), UriKind.Absolute, out var url) || url.Scheme != "https" ||
             url.Port != 443 || url.UserInfo.Length != 0 || url.Fragment.Length != 0 ||
             !string.Equals(url.IdnHost, host, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("测速需使用当前域名的有效 HTTPS 下载链接（443端口）");
+            throw new InvalidOperationException("请粘贴当前域名实际文件的 HTTPS 下载链接（必须 443 端口）；网页首页不能测速");
         return url;
     }
     internal static Dictionary<string, string> Headers(string text)

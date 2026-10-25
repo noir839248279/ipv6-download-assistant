@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.2.0";
+    const string Version = "3.2.1";
     DownloadRouter? router;
     NativeCapture? native;
     readonly SplitRouting clashBinding = new();
@@ -402,7 +402,7 @@ internal sealed partial class DownloadForm : Form
             if (closing) return;
             if (router != null)
             {
-                if (on) router.EnableAll();
+                if (on) { router.EnableAll(); if(native!=null)await native.SyncServices(router,cards.Keys); }
                 else { SaveAutomaticReport(); await StopRouting(); lossNotified = false; }
             }
             foreach (var id in cards.Keys) PaintSwitch(id, on);
@@ -429,7 +429,10 @@ internal sealed partial class DownloadForm : Form
         {
             if (router == null && on) await StartRouting(id);
             if (closing) return;
-            router?.Enable(id, on); PaintSwitch(id, on);
+            router?.Enable(id, on);
+            if(router!=null&&native!=null)await native.SyncServices(router,new[]{id});
+            if(router!=null&&!router.Counters.Values.Any(c=>c.Enabled)){SaveAutomaticReport();await StopRouting();}
+            PaintSwitch(id, on);
             hint.Text = on ? id == "global" ? "其他网站已开启 IPv6 优先" : "已开启仅 IPv6 内容连接，请重新开始下载"
                 : "该服务已关闭 IPv6 限制，新连接恢复 IPv4／原代理";
         }

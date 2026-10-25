@@ -9,7 +9,7 @@ internal sealed class RedirectSettings : IDisposable
     const string Key=@"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     const string RunKey=@"Software\Microsoft\Windows\CurrentVersion\RunOnce";
     internal static string Journal=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","redirect-lease.json");
-    internal record Lease(int Pid,long Birth,int Flags,string? Previous,string Owned);
+    internal record Lease(int Pid,long Birth,int Flags,string? Previous,string Owned,string? Pending=null);
     Process? guard;
     public string Proxy {get;private set;}="";
     public string Bypass {get;private set;}="";
@@ -30,16 +30,30 @@ internal sealed class RedirectSettings : IDisposable
         Bypass=key.GetValue("ProxyOverride") as string??"";
     }
     public void Apply(string url){
-        if(Owned!=null){using var check=Registry.CurrentUser.OpenSubKey(Key);if(!StillOwned)throw new InvalidOperationException("代理设置已被其他软件更改，请关闭开关后重试。");return;}
+        if(Owned!=null){
+            if(!StillOwned)throw new InvalidOperationException("代理设置已被其他软件更改，请关闭开关后重试。");
+            if(Owned==url)return;
+            var previous=JsonSerializer.Deserialize<Lease>(File.ReadAllText(Journal))!;
+            // Keep the recovery owner in step with the cache-busting PAC URL.
+            SaveLease(previous with{Pending=url});
+            try{Set(4,url);SaveLease(previous with{Owned=url,Pending=null});Owned=url;}
+            catch{Set(4,previous.Owned);SaveLease(previous);throw;}
+            return;
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(Journal)!);
         using var key=Registry.CurrentUser.OpenSubKey(Key)!;
         var lease=new Lease(Environment.ProcessId,Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks,Flags(),key.GetValue("AutoConfigURL") as string,url);
-        File.WriteAllText(Journal,JsonSerializer.Serialize(lease));
+        SaveLease(lease);
         using(var run=Registry.CurrentUser.CreateSubKey(RunKey))run.SetValue("IPv6LensRestore","\""+Environment.ProcessPath+"\" --redirect-recover");
         var si=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};si.ArgumentList.Add("--redirect-watch");si.ArgumentList.Add(Environment.ProcessId.ToString());si.ArgumentList.Add(lease.Birth.ToString());
         try{guard=Process.Start(si)??throw new Exception("恢复进程无法启动");Set(4,url);Owned=url;}catch{Recover();throw;}
     }
     public bool StillOwned {get {using var k=Registry.CurrentUser.OpenSubKey(Key);return Owned!=null&&Equals(k?.GetValue("AutoConfigURL"),Owned)&&(Flags()&4)!=0;}}
+    static void SaveLease(Lease lease){
+        string temporary=Journal+".tmp";
+        File.WriteAllText(temporary,JsonSerializer.Serialize(lease));
+        File.Move(temporary,Journal,true);
+    }
     internal static void Recover(int? expectedPid=null,long? expectedBirth=null){
         using var mutex=new Mutex(false,@"Local\IPv6Lens-RedirectRecovery");try{mutex.WaitOne();}catch(AbandonedMutexException){}
         try{
@@ -48,7 +62,7 @@ internal sealed class RedirectSettings : IDisposable
                 var lease=JsonSerializer.Deserialize<Lease>(File.ReadAllText(Journal))!;
                 if(expectedPid!=null&&(lease.Pid!=expectedPid||lease.Birth!=expectedBirth))return;
                 using var key=Registry.CurrentUser.OpenSubKey(Key,true)!;
-                if(Equals(key.GetValue("AutoConfigURL"),lease.Owned)){Set(lease.Flags,lease.Previous);if(lease.Previous==null)key.DeleteValue("AutoConfigURL",false);}
+                if(Equals(key.GetValue("AutoConfigURL"),lease.Owned)||lease.Pending!=null&&Equals(key.GetValue("AutoConfigURL"),lease.Pending)){Set(lease.Flags,lease.Previous);if(lease.Previous==null)key.DeleteValue("AutoConfigURL",false);}
                 File.Delete(Journal);
             }
             using var run=Registry.CurrentUser.OpenSubKey(RunKey,true);run?.DeleteValue("IPv6LensRestore",false);

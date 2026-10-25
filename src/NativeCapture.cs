@@ -7,6 +7,7 @@ namespace IPv6Lens;
 internal sealed class NativeCapture : IAsyncDisposable
 {
     Process? process;IntPtr job;string folder="";HttpClient? api;
+    internal readonly System.Collections.Concurrent.ConcurrentQueue<string> TestLog=new();
     public string Status {get;private set;}="原生客户端接管未启动";
     public bool Active=>process!=null&&!process.HasExited;
     public int? ExitCode=>process!=null&&process.HasExited?process.ExitCode:null;
@@ -15,7 +16,10 @@ internal sealed class NativeCapture : IAsyncDisposable
     [DllImport("kernel32.dll")]static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr value);
     internal static string CorePath=>Path.Combine(AppContext.BaseDirectory,"core","mihomo.exe");
-    internal static object Config(DownloadRouter router,int control,string secret,bool tun)=>new Dictionary<string,object>{
+    internal static string ServiceGroup(string id)=>"Service-"+id;
+    internal static string RelayFor(string id)=>id=="steam"?"SteamRelay":id=="epic"?"EpicRelay":"BrowserRelay";
+    internal static object Config(DownloadRouter router,int control,string secret,bool tun){
+        var config=new Dictionary<string,object>{
         ["mode"]="rule",["ipv6"]=true,["log-level"]="silent",["find-process-mode"]="always",
         ["external-controller"]="127.0.0.1:"+control,["secret"]=secret,["allow-lan"]=false,
         ["tun"]=new Dictionary<string,object>{["enable"]=tun,["device"]="IPv6Lens-TUN",["stack"]="gvisor",["auto-route"]=true,["auto-detect-interface"]=true,["strict-route"]=false,["dns-hijack"]=new[]{"any:53","tcp://any:53"},["mtu"]=1500},
@@ -45,16 +49,62 @@ internal sealed class NativeCapture : IAsyncDisposable
             "DOMAIN,download.epicgames.com,EpicRelay","DOMAIN,download2.epicgames.com,EpicRelay","DOMAIN,download3.epicgames.com,EpicRelay","DOMAIN,download4.epicgames.com,EpicRelay",
             "DOMAIN-SUFFIX,epicgamescdn.com,EpicRelay","DOMAIN-SUFFIX,epicgames-download1.akamaized.net,EpicRelay",
             "MATCH,DIRECT"}
-    };
+        };
+        // Native clients do not consult PAC. Give their service switches independent
+        // selectors so DIRECT never traverses the C# content relay when disabled.
+        config["proxy-groups"]=DownloadRouter.Sites.Where(s=>s.Id!="global").Select(s=>new Dictionary<string,object>{
+            ["name"]=ServiceGroup(s.Id),["type"]="select",
+            ["proxies"]=router.Counters[s.Id].Enabled?new[]{RelayFor(s.Id),"DIRECT"}:new[]{"DIRECT",RelayFor(s.Id)}
+        }).ToArray();
+        var rules=((string[])config["rules"]).Where(r=>!r.StartsWith("DOMAIN",StringComparison.Ordinal)&&r!="MATCH,DIRECT")
+            .Select(r=>{
+                string? site=r.EndsWith(",SteamRelay",StringComparison.Ordinal)||r.Contains("PROCESS-NAME,steam",StringComparison.Ordinal)?"steam":
+                    r.EndsWith(",EpicRelay",StringComparison.Ordinal)||r.Contains("PROCESS-NAME,Epic",StringComparison.Ordinal)?"epic":null;
+                return site==null?r:r[..(r.LastIndexOf(',')+1)]+ServiceGroup(site);
+            }).ToList();
+        rules.InsertRange(2,DownloadRouter.ControlHosts.Select(h=>"DOMAIN,"+h+",DIRECT"));
+        foreach(var site in DownloadRouter.Sites.Where(s=>s.Id!="global"))
+            rules.AddRange(site.Domains.Select(d=>"DOMAIN-SUFFIX,"+d+","+ServiceGroup(site.Id)));
+        rules.Add("MATCH,DIRECT");
+        config["rules"]=rules.ToArray();
+        return config;
+    }
+    internal async Task SyncServices(DownloadRouter router,IEnumerable<string> ids){
+        if(api==null||!Active)throw new IOException("网络内核未运行");
+        foreach(string id in ids.Where(id=>id!="global")){
+            string group=ServiceGroup(id);
+            using var body=new StringContent(JsonSerializer.Serialize(new{name=router.Counters[id].Enabled?RelayFor(id):"DIRECT"}),System.Text.Encoding.UTF8,"application/json");
+            using var response=await api.PutAsync("/proxies/"+Uri.EscapeDataString(group),body);
+            response.EnsureSuccessStatusCode();
+            using var read=await api.GetAsync("/proxies/"+Uri.EscapeDataString(group));
+            read.EnsureSuccessStatusCode();
+            using var state=JsonDocument.Parse(await read.Content.ReadAsStringAsync());
+            if(state.RootElement.GetProperty("now").GetString()!=(router.Counters[id].Enabled?RelayFor(id):"DIRECT"))
+                throw new IOException("服务路由切换未确认");
+        }
+        // Existing native connections retain their original outbound until closed.
+        var groups=ids.Where(id=>id!="global").Select(ServiceGroup).ToHashSet();
+        using var connections=await api.GetAsync("/connections");connections.EnsureSuccessStatusCode();
+        using var data=JsonDocument.Parse(await connections.Content.ReadAsStringAsync());
+        if(data.RootElement.TryGetProperty("connections",out var rows)&&rows.ValueKind==JsonValueKind.Array)
+            foreach(var row in rows.EnumerateArray())
+                if(row.GetProperty("chains").EnumerateArray().Any(c=>groups.Contains(c.GetString()??""))){
+                    using var closed=await api.DeleteAsync("/connections/"+Uri.EscapeDataString(row.GetProperty("id").GetString()!));
+                    if(closed.StatusCode!=System.Net.HttpStatusCode.NotFound)closed.EnsureSuccessStatusCode();
+                }
+    }
     static int FreePort(){using var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();return ((IPEndPoint)listener.LocalEndpoint).Port;}
-    public async Task Start(DownloadRouter router,bool tun=true){
+    public async Task Start(DownloadRouter router,bool tun=true,Action<Dictionary<string,object>>? testConfigure=null){
+        if(testConfigure!=null&&(tun||!router.TestMode))throw new InvalidOperationException("Test configuration requires an isolated router without TUN");
         if(tun&&!Program.Admin)throw new IOException("原生客户端接管需要管理员权限");
         if(!File.Exists(CorePath))throw new IOException("缺少 core/mihomo.exe");
         // Refuse competing TUNs; do not edit any external application's config.
         if(tun){var active=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up&&(n.Name.Contains("Mihomo",StringComparison.OrdinalIgnoreCase)||n.Name.Contains("Clash",StringComparison.OrdinalIgnoreCase)||n.Name.Equals("Meta",StringComparison.OrdinalIgnoreCase)||n.Description.Contains("Meta Tunnel",StringComparison.OrdinalIgnoreCase)||n.Name.Contains("IPv6Lens-TUN",StringComparison.OrdinalIgnoreCase)));if(active)throw new IOException("检测到其他 TUN 正在运行，未叠加接管");}
         if(tun)router.Nodes.InterfaceIndex=NodeNetwork.CaptureInterface();
         folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","core",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
-        int port=FreePort();string secret=Convert.ToHexString(RandomNumberGenerator.GetBytes(24));string config=Path.Combine(folder,"config.json");File.WriteAllText(config,JsonSerializer.Serialize(Config(router,port,secret,tun)));
+        int port=FreePort();string secret=Convert.ToHexString(RandomNumberGenerator.GetBytes(24));string config=Path.Combine(folder,"config.json");
+        var generated=(Dictionary<string,object>)Config(router,port,secret,tun);testConfigure?.Invoke(generated);
+        File.WriteAllText(config,JsonSerializer.Serialize(generated));
         job=CreateJobObject(IntPtr.Zero,null);if(job==IntPtr.Zero)throw new IOException("无法创建内核生命周期保护");
         // JOBOBJECT_EXTENDED_LIMIT_INFORMATION x64; kill child if owner crashes.
         IntPtr info=Marshal.AllocHGlobal(144);try{Marshal.Copy(new byte[144],0,info,144);Marshal.WriteInt32(info,16,0x2000);if(!SetInformationJobObject(job,9,info,144))throw new IOException("无法启用内核退出保护");}finally{Marshal.FreeHGlobal(info);}
@@ -62,7 +112,8 @@ internal sealed class NativeCapture : IAsyncDisposable
         process=Process.Start(si)??throw new IOException("网络内核无法启动");
         if(!AssignProcessToJobObject(job,process.Handle)){process.Kill(true);throw new IOException("无法保护网络内核生命周期");}
         // Drain but never persist raw network logs (may contain private hosts).
-        process.OutputDataReceived+=(_,_)=>{};process.ErrorDataReceived+=(_,_)=>{};process.BeginOutputReadLine();process.BeginErrorReadLine();
+        void Drain(string? line){if(testConfigure!=null&&line!=null){TestLog.Enqueue(line);while(TestLog.Count>40)TestLog.TryDequeue(out _);}}
+        process.OutputDataReceived+=(_,e)=>Drain(e.Data);process.ErrorDataReceived+=(_,e)=>Drain(e.Data);process.BeginOutputReadLine();process.BeginErrorReadLine();
         api=new HttpClient(new HttpClientHandler{UseProxy=false,AllowAutoRedirect=false}){BaseAddress=new Uri("http://127.0.0.1:"+port),Timeout=TimeSpan.FromSeconds(1)};api.DefaultRequestHeaders.Authorization=new("Bearer",secret);
         for(int i=0;i<30;i++){if(process.HasExited)throw new IOException("网络内核启动失败");try{using var r=await api.GetAsync("/configs");r.EnsureSuccessStatusCode();using var data=JsonDocument.Parse(await r.Content.ReadAsStringAsync());if(!tun||(data.RootElement.GetProperty("tun").GetProperty("enable").GetBoolean()&&System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Name=="IPv6Lens-TUN"&&n.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up))){Status=tun?"原生客户端接管已开启":"内核配置检查通过";return;}}catch{}await Task.Delay(200);}
         throw new IOException("网络内核未就绪");

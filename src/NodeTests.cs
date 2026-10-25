@@ -32,8 +32,10 @@ internal static class NodeTests
             await nodes.Refresh(host, CancellationToken.None);
             Check(nodes.Snapshot(host).Length == 2, "Only distinct public IPv6 candidates survive discovery");
             Reject(() => ContentNodes.Host("drive.quark.cn"), "Control APIs are excluded from node selection");
-            Reject(() => ContentNodes.Host("evilquark.cn"), "Content hostname boundary is exact");
-            Reject(() => nodes.Select(host, a), "Untested nodes cannot be selected");
+            Check(ContentNodes.Host("cdn.example.net") == "cdn.example.net", "Custom content hostnames are accepted");
+            nodes.Select(host, a);
+            Check(nodes.Selected(host)!.Equals(a), "Refreshed nodes can be selected before testing");
+            nodes.Automatic(host);
             Reject(() => nodes.Best(host, NodeOrder.Speed), "Missing speed data cannot win fastest-node selection");
             nodes.LatencyProbe = (_, ip, _) => Task.FromResult(ip.Equals(a) ? 90d : 30d);
             await nodes.Measure(host, NodeOrder.Latency, null, new Dictionary<string, string>(), null, CancellationToken.None);
@@ -151,6 +153,23 @@ internal static class NodeTests
         router.NodeConnector = (_, _, _) => throw new IOException("Fixture selected node unavailable");
         using (var failed = await http.GetAsync("http://" + host + ":443/"))
             check(failed.StatusCode == HttpStatusCode.BadGateway && !proxy.Pending(), "Selected-node failure never silently falls back");
+        using var retryOrigin = new TcpListener(IPAddress.IPv6Loopback, 0);
+        retryOrigin.Start();
+        var retryServing = Serve(retryOrigin, false);
+        int retryPort = ((IPEndPoint)retryOrigin.LocalEndpoint).Port;
+        int retryQueries = 0;
+        router.Nodes.Automatic(host);
+        router.NodeConnector = null;
+        router.Resolve = _ =>
+        {
+            Interlocked.Increment(ref retryQueries);
+            return Task.FromResult(retryQueries == 1 ? Array.Empty<IPAddress>() : new[] { IPAddress.IPv6Loopback });
+        };
+        check(await http.GetStringAsync("http://" + host + ":" + retryPort + "/") == "ok",
+            "Automatic strict IPv6 route refreshes AAAA after an empty result");
+        await retryServing;
+        check(retryQueries == 2, "Automatic retry performs one fresh AAAA lookup without IPv4 fallback");
+        router.Nodes.Select(host, chosen);
         var originalServing = Serve(proxy, true);
         router.Enable("quark", false);
         check(await http.GetStringAsync("http://" + host + ":443/") == "ok", "Turning the service off bypasses its selected node");

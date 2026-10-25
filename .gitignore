@@ -13,3 +13,5 @@
 !/src/assets/app.ico
 !/third-party/
 !/third-party/mihomo-LICENSE.txt
+!/tests/
+!/tests/pac-routing.cjs
