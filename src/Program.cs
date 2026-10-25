@@ -7,6 +7,8 @@ internal static class Program
     public static bool Admin => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
     [STAThread] static void Main(string[] args)
     {
+        if(args.Length==2&&args[0]=="--node-test"){NodeTests.Run(args[1]);return;}
+        if(args.Length==2&&args[0]=="--node-live-test"){NodeTests.Live(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-egress-test"){NativeEgressTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--relay-policy-test"){RelayPolicyTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--relay-resilience-test"){RelayResilienceTests.Run(args[1]);return;}
@@ -41,6 +43,7 @@ internal static class Program
         if(args.Length==2&&args[0]=="--split-live-test"){SplitRoutingTests.Live(args[1]);return;}
         if(args.Length==2&&args[0]=="--split-owner-test"){SplitRoutingTests.Owner(args[1]);return;}
         ApplicationConfiguration.Initialize();
+        if(args.Length==2&&args[0]=="--node-ui-test"){NodeForm.UiTest(args[1]);return;}
         bool dashboardTest=args.Length==2&&args[0]=="--dashboard-test";
         bool uiSmoke=dashboardTest||args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";
         bool uiNative=args.Length==2&&args[0]=="--ui-native-test";

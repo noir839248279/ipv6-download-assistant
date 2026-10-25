@@ -61,6 +61,9 @@ internal sealed class DownloadRouter : IAsyncDisposable
     public int Port {get;private set;}public string PacUrl {get;private set;}="";
     internal Func<string,Task<IPAddress[]>> Resolve=host=>Dns.GetHostAddressesAsync(host);
     internal Func<string,Task<IPAddress[]>> OriginalResolve=host=>Dns.GetHostAddressesAsync(host);
+    internal readonly ContentNodes Nodes=new();
+    internal Func<IPAddress,int,CancellationToken,Task<TcpClient>>? NodeConnector;
+    internal string[] ContentHosts()=>servers.Keys.Where(h=>ContentSite(h)!=null&&!IPAddress.TryParse(h,out _)).OrderBy(h=>h).ToArray();
     internal string FallbackProxy="",Bypass="";
     internal bool TestMode;
     // Optional narrow experiment: only this content hostname may reach an IPv6 origin.
@@ -99,7 +102,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     public async Task Start(bool system=true){
         TestMode=!system;
         if(system){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;}
-        if(ProductionPolicies){contentDns=new(FallbackProxy);Resolve=contentDns.Resolve;}
+        if(ProductionPolicies){contentDns=new(FallbackProxy);Resolve=contentDns.Resolve;Nodes.Lookup=contentDns.Discover;}
         listener=new TcpListener(IPAddress.Loopback,0);listener.Start();Port=((IPEndPoint)listener.LocalEndpoint).Port;acceptLoops.Add(Task.Run(()=>Accept(listener)));
         if(ProductionPolicies){SteamPort=StartNative("steam");EpicPort=StartNative("epic");}
         var builder=WebApplication.CreateSlimBuilder();builder.Logging.ClearProviders();builder.WebHost.ConfigureKestrel(k=>k.Listen(IPAddress.Loopback,0));web=builder.Build();
@@ -149,6 +152,17 @@ internal sealed class DownloadRouter : IAsyncDisposable
     }
     static async Task<byte[]> Header(Stream stream,CancellationToken ct){using var bytes=new MemoryStream();byte[] one=new byte[1];int end=0;while(bytes.Length<32768){if(await stream.ReadAsync(one,ct)==0)throw new IOException();bytes.WriteByte(one[0]);end=(end<<8)|one[0];if(end==0x0d0a0d0a)return bytes.ToArray();}throw new IOException("Header too large");}
     async Task<(TcpClient Client,bool Proxy)> Connect(string host,int port,bool preferV6,DownloadCounter row,string scheme,CancellationToken ct,bool allowFallback=false){
+        if(preferV6&&ProductionPolicies&&port==443&&ContentSite(host)!=null&&Nodes.Selected(host) is IPAddress chosen){
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(4000);
+            try{
+                var pinned=await (NodeConnector?.Invoke(chosen,port,timeout.Token)??NodeNetwork.Connect(chosen,port,Nodes.InterfaceIndex,timeout.Token));
+                var remote=((IPEndPoint)pinned.Client.RemoteEndPoint!).Address;
+                if(remote.AddressFamily!=AddressFamily.InterNetworkV6||!TestMode&&!remote.Equals(chosen)){pinned.Dispose();throw new IOException("节点出口不匹配");}
+                row.State="正在使用所选 IPv6 节点";row.Server=host;return(pinned,false);
+            }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException){
+                ct.ThrowIfCancellationRequested();throw new IPv6RouteException("selected_node_unavailable",ex);
+            }
+        }
         IPAddress[] addresses=Array.Empty<IPAddress>();bool dnsFailed=false;
         // A disabled production category must not depend on the content AAAA service.
         if(preferV6||!ProductionPolicies){
@@ -214,7 +228,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
             Exception? cause=ex;while(cause!=null&&cause is not SocketException)cause=cause.InnerException;
             string? reason=(ex as IPv6RouteException)?.Reason;
             row.LastFailure=new(DateTime.UtcNow,stage,ex.GetType().Name,reason,(cause as SocketException)?.SocketErrorCode.ToString(),site=="global"?null:host);
-            row.State=ProtectionLost&&row.Enabled?"代理设置失效：未受保护，请暂停下载":row.Enabled&&site!="global"?reason switch{"no_aaaa"=>"无 IPv6 地址；未回退 IPv4","dns_failed"=>"IPv6 解析失败；未回退 IPv4","ipv6_connect_failed"=>"IPv6 连接失败；未回退 IPv4",_=>"IPv6 传输失败；未回退 IPv4"}:"连接失败："+ex.GetType().Name;
+            row.State=ProtectionLost&&row.Enabled?"代理设置失效：未受保护，请暂停下载":row.Enabled&&site!="global"?reason switch{"no_aaaa"=>"无 IPv6 地址；未回退 IPv4","dns_failed"=>"IPv6 解析失败；未回退 IPv4","ipv6_connect_failed"=>"IPv6 连接失败；未回退 IPv4","selected_node_unavailable"=>"所选节点不可达；请更新节点或恢复自动",_=>"IPv6 传输失败；未回退 IPv4"}:"连接失败："+ex.GetType().Name;
             if(!responseStarted)try{using var replyTimeout=new CancellationTokenSource(1000);await input.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"u8.ToArray(),replyTimeout.Token);}catch{}
         }
         finally{sessions.TryRemove(id,out _);}

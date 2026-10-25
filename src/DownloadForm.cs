@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.1.3";
+    const string Version = "3.2.0";
     DownloadRouter? router;
     NativeCapture? native;
     readonly SplitRouting clashBinding = new();
@@ -58,6 +58,11 @@ internal sealed partial class DownloadForm : Form
         }
         Action("使用说明", "查看使用说明", () => MessageBox.Show(this, UsageText, "使用说明"));
         Action("详细诊断", "打开连接与网络诊断", () => { using var detail = new MainForm(); detail.ShowDialog(this); });
+        Action("IPv6 节点", "刷新、测试并选择 IPv6 内容节点", () =>
+        {
+            if (router == null) { MessageBox.Show(this, "请先开启需要调整的内容服务", "IPv6 节点"); return; }
+            using var nodes = new NodeForm(router.Nodes, router.ContentHosts()); nodes.ShowDialog(this);
+        });
         Action("导出报告", "导出脱敏 JSON 诊断报告", Export);
         Action("清零流量", "清零累计流量和趋势", ResetTraffic);
         Action("◐", "切换深色 / 浅色主题", () => { DashboardTheme.Light = !DashboardTheme.Light; ApplyTheme(); }, 36);
@@ -144,18 +149,20 @@ internal sealed partial class DownloadForm : Form
         canvas.Width = width;
         float w = width / ScaleFactor, gap = 14, left = 24, inner = w - 48;
         void Place(Control c, float x, float y, float cw, float ch) => c.SetBounds(Px(x), Px(y), Px(cw), Px(ch));
-        bool compact = w < 960;
+        bool compact = w < 1120;
         Place(appIcon, left, 22, 42, 42);
         Place(title, left + 54, 17, 202, 31);
         Place(version, left + 260, 22, 62, 23);
         Place(network, left + 54, 51, compact ? inner - 58 : inner - 540, 23);
         float actionX = compact ? left : w - 24 - actions.Sum(b => (int)b.Tag! + 6) + 6;
+        float actionY = compact ? 88 : 29;
         foreach (var button in actions)
         {
             int bw = (int)button.Tag!;
-            Place(button, actionX, compact ? 88 : 29, bw, 34); actionX += bw + 6;
+            if (compact && actionX + bw > w - 24) { actionX = left; actionY += 40; }
+            Place(button, actionX, actionY, bw, 34); actionX += bw + 6;
         }
-        float y = compact ? 142 : 96;
+        float y = compact ? actionY + 54 : 96;
         if (w >= 850)
         {
             float splitWidth = (inner - gap) * .52f;
