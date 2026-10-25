@@ -21,8 +21,11 @@ internal sealed class NativeCapture : IAsyncDisposable
         ["tun"]=new Dictionary<string,object>{["enable"]=tun,["device"]="IPv6Lens-TUN",["stack"]="gvisor",["auto-route"]=true,["auto-detect-interface"]=true,["strict-route"]=false,["dns-hijack"]=new[]{"any:53","tcp://any:53"},["mtu"]=1500},
         ["dns"]=new Dictionary<string,object>{["enable"]=true,["ipv6"]=true,["enhanced-mode"]="redir-host",["default-nameserver"]=new[]{"223.5.5.5","119.29.29.29"},["nameserver"]=new[]{"https://223.5.5.5/dns-query"}},
         ["sniffer"]=new Dictionary<string,object>{["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=true,["sniff"]=new{HTTP=new{ports=new[]{80,8080}},TLS=new{ports=new[]{443}},QUIC=new{ports=new[]{443}}}},
-        ["proxies"]=new[]{new{name="BrowserRelay",type="http",server="127.0.0.1",port=router.Port},new{name="SteamRelay",type="http",server="127.0.0.1",port=router.SteamPort},new{name="EpicRelay",type="http",server="127.0.0.1",port=router.EpicPort}},
+        ["proxies"]=new object[]{new{name="BrowserRelay",type="http",server="127.0.0.1",port=router.Port},new{name="SteamRelay",type="http",server="127.0.0.1",port=router.SteamPort},new{name="EpicRelay",type="http",server="127.0.0.1",port=router.EpicPort},
+            new Dictionary<string,object>{["name"]="IPv6Origin",["type"]="direct",["ip-version"]="ipv6"}},
         ["rules"]=new[]{
+            // Sniffing can erase DstIP. The origin socket's source family survives it.
+            "AND,((PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+"),(SRC-IP-CIDR,::/0)),IPv6Origin",
             "PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+",DIRECT","PROCESS-NAME,mihomo.exe,DIRECT","PROCESS-NAME,verge-mihomo.exe,DIRECT","PROCESS-NAME,verge-mihomo-alpha.exe,DIRECT","PROCESS-NAME,clash.exe,DIRECT","PROCESS-NAME,sing-box.exe,DIRECT",
             "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve","IP-CIDR,10.0.0.0/8,DIRECT,no-resolve","IP-CIDR,172.16.0.0/12,DIRECT,no-resolve","IP-CIDR,192.168.0.0/16,DIRECT,no-resolve","IP-CIDR6,::1/128,DIRECT,no-resolve","IP-CIDR6,fe80::/10,DIRECT,no-resolve",
             "AND,((PROCESS-NAME,steam.exe),(NETWORK,UDP),(DST-PORT,443)),REJECT",
