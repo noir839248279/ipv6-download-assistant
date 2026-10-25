@@ -1,426 +1,485 @@
 using System.Text.Json;
 
 namespace IPv6Lens;
-internal sealed class DownloadForm : Form
+
+internal sealed partial class DownloadForm : Form
 {
-    DownloadRouter? router; NativeCapture? native;
-    readonly SplitRouting clashBinding=new();
-    sealed class TrafficColumn
+    const string Version = "3.1.0";
+    DownloadRouter? router;
+    NativeCapture? native;
+    readonly SplitRouting clashBinding = new();
+    readonly Dictionary<string, ServiceTile> cards = new();
+    readonly Panel viewport = new() { Dock = DockStyle.Fill, AutoScroll = true };
+    readonly Panel canvas = new();
+    readonly Label title = MakeLabel("IPv6 下载助手", 18, true);
+    readonly Label version = MakeLabel("v" + Version, 9);
+    readonly Label network = MakeLabel("正在检测 IPv4 / IPv6 网络连接…", 9);
+    readonly Label hint = MakeLabel("正在启动下载接管…", 9);
+    readonly Label sectionTitle = MakeLabel("服务监控", 12, true);
+    readonly Label serviceCount = MakeLabel("0 / 6 已开启", 9);
+    readonly Label masterText = MakeLabel("全部关闭", 9, true);
+    readonly PictureBox appIcon = new() { SizeMode = PictureBoxSizeMode.Zoom };
+    readonly DashboardToggle master = new() { AutoCheck = false, AccessibleName = "全部服务接管" };
+    readonly SplitTile split = new();
+    readonly TrafficShare share = new();
+    readonly TrafficSummary[] summaries = { new(0), new(1), new(2) };
+    readonly List<DashboardButton> actions = new();
+    readonly ToolTip tooltips = new();
+    readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
+    readonly System.Windows.Forms.Timer clashTimer = new() { Interval = 10000 };
+    bool busy, closing, closeReady, lossNotified, clashBusy;
+    readonly bool testMode;
+    Task startup = Task.CompletedTask, clashWork = Task.CompletedTask, serviceWork = Task.CompletedTask;
+    float ScaleFactor => DeviceDpi / 96f;
+    int Px(float n) => (int)Math.Round(n * ScaleFactor);
+    internal bool DefaultsActive => router != null && (testMode || native?.Active == true) &&
+        !router.ProtectionLost && cards.Values.All(c => c.Toggle.Checked) && router.Counters.Values.All(c => c.Enabled);
+    internal bool SplitActive => split.Toggle.Checked;
+
+    public DownloadForm(bool testMode = false)
     {
-        public readonly Label DownRate, DownTotal, UpRate, UpTotal;
-        public TrafficColumn(Label downRate, Label downTotal, Label upRate, Label upTotal)
+        this.testMode = testMode;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        Text = "IPv6 下载助手 " + Version;
+        ClientSize = new(Px(1280), Px(920)); MinimumSize = new(Px(540), Px(600));
+        StartPosition = FormStartPosition.CenterScreen;
+        Font = new Font("Microsoft YaHei UI", 9);
+        appIcon.Image = Icon?.ToBitmap();
+        Controls.Add(viewport); viewport.Controls.Add(canvas);
+        canvas.Controls.AddRange(new Control[] { appIcon, title, version, network, split, share,
+            sectionTitle, serviceCount, masterText, master, hint });
+        canvas.Controls.AddRange(summaries);
+        void Action(string text, string description, Action run, int width = 96)
         {
-            DownRate=downRate; DownTotal=downTotal; UpRate=upRate; UpTotal=upTotal;
+            var button = new DashboardButton(text, description, (_, _) => { if (!closing && !clashBusy) run(); })
+            { Tag = width };
+            tooltips.SetToolTip(button, description); actions.Add(button); canvas.Controls.Add(button);
         }
-        public void Set(double down,long received,double up,long sent){
-            DownRate.Text="↓ 下载: "+TrafficStore.Bytes(down)+"/s";
-            DownTotal.Text="  累计: "+TrafficStore.Bytes(received);
-            UpRate.Text="↑ 上传: "+TrafficStore.Bytes(up)+"/s";
-            UpTotal.Text="  累计: "+TrafficStore.Bytes(sent);
-        }
-    }
-    sealed class CardView
-    {
-        public readonly CheckBox Switch;
-        public readonly TrafficColumn Four, Six, Unknown;
-        public readonly Label State, Share, Server;
-        public CardView(CheckBox sw, TrafficColumn four, TrafficColumn six, TrafficColumn unk, Label st, Label sh, Label srv)
+        Action("使用说明", "查看使用说明", () => MessageBox.Show(this, UsageText, "使用说明"));
+        Action("详细诊断", "打开连接与网络诊断", () => { using var detail = new MainForm(); detail.ShowDialog(this); });
+        Action("导出报告", "导出脱敏 JSON 诊断报告", Export);
+        Action("清零流量", "清零累计流量和趋势", ResetTraffic);
+        Action("◐", "切换深色 / 浅色主题", () => { DashboardTheme.Light = !DashboardTheme.Light; ApplyTheme(); }, 36);
+        tooltips.SetToolTip(master, "全部开启 / 全部关闭");
+        tooltips.SetToolTip(split.Toggle, "开启分流或恢复原网络设置");
+        foreach (string id in new[] { "quark", "bilibili", "steam", "epic", "youtube", "global" })
         {
-            Switch=sw; Four=four; Six=six; Unknown=unk; State=st; Share=sh; Server=srv;
-        }
-    }
-    readonly Dictionary<string, CardView> cards=new();
-    readonly Label network=Label("正在检测 IPv4 / IPv6 网络连接…",11), hint=Label("开启对应分类后，重新开始下载或刷新视频。",10.5f);
-    readonly Label gV6Down=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gV6Up=Label("↑ 上传: 0 B/s (累计 0 B)",11f), gV6Share=Label("0.0%",11.5f);
-    readonly Label gV4Down=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gV4Up=Label("↑ 上传: 0 B/s (累计 0 B)",11f);
-    readonly Label gProxyDown=Label("↓ 下载: 0 B/s (累计 0 B)",11f), gProxyUp=Label("↑ 上传: 0 B/s (累计 0 B)",11f);
-    readonly System.Windows.Forms.Timer timer=new(){Interval=1000};
-    readonly System.Windows.Forms.Timer clashTimer=new(){Interval=10000};
-    readonly CheckBox clashToggle=new(){Enabled=false,Text="流量分流：正在读取 Clash 状态…",Appearance=Appearance.Button,AutoCheck=false,TextAlign=ContentAlignment.MiddleCenter,FlatStyle=FlatStyle.Flat,BackColor=Color.White,Font=new Font("Microsoft YaHei UI",11.5f,FontStyle.Bold)};
-    readonly Label clashStatus=Label("启动 Clash Verge 后自动读取状态。",10.5f);
-    bool busy,closing,closeReady,lossNotified,clashBusy;readonly bool testMode;Task startup=Task.CompletedTask,clashWork=Task.CompletedTask;
-    internal bool DefaultsActive=>router!=null&&(testMode||native?.Active==true)&&!router.ProtectionLost&&cards.Values.All(c=>c.Switch.Checked)&&router.Counters.Values.All(c=>c.Enabled);
-    internal bool SplitActive=>clashToggle.Checked;
-    public DownloadForm(bool testMode=false){
-        Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        this.testMode=testMode;
-        Text="IPv6 下载助手 3.0.11";Width=1560;Height=1080;MinimumSize=new(1360,960);StartPosition=FormStartPosition.CenterScreen;Font=new Font("Microsoft YaHei UI",10);BackColor=Color.FromArgb(243,246,250);
-        var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(20,12,20,12),RowCount=6,ColumnCount=1};Controls.Add(root);
-        root.RowStyles.Add(new(SizeType.Absolute,74));
-        root.RowStyles.Add(new(SizeType.Absolute,106));
-        root.RowStyles.Add(new(SizeType.Absolute,96));
-        root.RowStyles.Add(new(SizeType.Percent,100));
-        root.RowStyles.Add(new(SizeType.Absolute,32));
-        root.RowStyles.Add(new(SizeType.Absolute,26));
-
-        // 1. 顶部 Header (图标垂直居中，操作按钮宽幅 700px 容纳 6 颗大字按钮，副标题独立行不被覆盖)
-        var header=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=Padding.Empty};
-        header.RowStyles.Add(new(SizeType.Percent,100));
-        header.ColumnStyles.Add(new(SizeType.Absolute,58));header.ColumnStyles.Add(new(SizeType.Percent,100));header.ColumnStyles.Add(new(SizeType.Absolute,700));
-        var appIconBox=new PictureBox{Width=48,Height=48,SizeMode=PictureBoxSizeMode.Zoom,Image=Icon?.ToBitmap()??new Bitmap(48,48),Margin=new Padding(0,8,10,8),Dock=DockStyle.None,Anchor=AnchorStyles.Left|AnchorStyles.Top};
-        header.Controls.Add(appIconBox,0,0);
-
-        var titleBox=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=2,ColumnCount=1,Margin=Padding.Empty};
-        titleBox.RowStyles.Add(new(SizeType.Absolute,40));titleBox.RowStyles.Add(new(SizeType.Percent,100));
-        var titleRow=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.LeftToRight,WrapContents=false,Margin=Padding.Empty};
-        titleRow.Controls.Add(new Label{Text="IPv6 下载助手",Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),AutoSize=true,Margin=new Padding(0,0,10,0)});
-        var verBadge=new Label{Text="v3.0.11",Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),BackColor=Color.FromArgb(209,250,229),AutoSize=true,Padding=new Padding(6,3,6,3),Margin=new Padding(0,6,0,0)};
-        titleRow.Controls.Add(verBadge);titleBox.Controls.Add(titleRow,0,0);
-        network.ForeColor=Color.FromArgb(71,85,105);network.AutoEllipsis=true;network.Margin=Padding.Empty;titleBox.Controls.Add(network,0,1);
-        header.Controls.Add(titleBox,1,0);
-
-        var actions=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.RightToLeft,WrapContents=false,Margin=Padding.Empty,Padding=new Padding(0,14,0,0)};
-        header.Controls.Add(actions,2,0);
-        void Button(string title,Action run,Color? bg=null,Color? fg=null){
-            var b=new Button{Text=title,AutoSize=true,Height=38,FlatStyle=FlatStyle.Flat,BackColor=bg??Color.White,ForeColor=fg??Color.FromArgb(30,41,59),Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold),Margin=new Padding(4,0,4,0),Padding=new Padding(10,0,10,0)};
-            b.FlatAppearance.BorderColor=Color.FromArgb(203,213,225);
-            b.Click+=(_,_)=>{if(!clashBusy)run();};actions.Controls.Add(b);
-        }
-        Button("使用说明",()=>MessageBox.Show(this,UsageText,"使用说明"));
-        Button("详细诊断",()=>{using var detail=new MainForm();detail.ShowDialog(this);});
-        Button("导出报告",Export);
-        Button("清零流量",()=>router?.Reset());
-        Button("全部关闭",async()=>await SetAll(false));
-        Button("全部开启",async()=>await SetAll(true),Color.FromArgb(16,185,129),Color.White);
-        root.Controls.Add(header);
-
-        // 2. Hero Card: 双网卡智能分流卡片 (加高至 118px，大字清晰排版)
-        var hero=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,BackColor=Color.FromArgb(15,23,42),Padding=new Padding(22,8,22,8),Margin=new Padding(0,4,0,6)};
-        hero.RowStyles.Add(new(SizeType.Percent,100));
-        hero.ColumnStyles.Add(new(SizeType.Percent,66));hero.ColumnStyles.Add(new(SizeType.Percent,34));
-        var heroLeft=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=2,ColumnCount=1,Margin=Padding.Empty};
-        heroLeft.RowStyles.Add(new(SizeType.Absolute,26));heroLeft.RowStyles.Add(new(SizeType.Percent,100));
-        var heroTitle=new Label{Text="🔀 有线 / Wi-Fi 分流",Font=new Font("Microsoft YaHei UI",13f,FontStyle.Bold),ForeColor=Color.White,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-        heroLeft.Controls.Add(heroTitle,0,0);
-        clashStatus.ForeColor=Color.FromArgb(203,213,225);clashStatus.AutoEllipsis=true;clashStatus.TextAlign=ContentAlignment.TopLeft;heroLeft.Controls.Add(clashStatus,0,1);
-        hero.Controls.Add(heroLeft,0,0);
-        clashToggle.Dock=DockStyle.Fill;clashToggle.Margin=new Padding(16,10,0,10);
-        hero.Controls.Add(clashToggle,1,0);root.Controls.Add(hero);
-
-        // 3. 全局三类出口宏观指标条 (加高至 108px，大字号粗体高清晰呈现)
-        var globalStrip=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=new Padding(0,2,0,6)};
-        globalStrip.RowStyles.Add(new(SizeType.Percent,100));
-        for(int i=0;i<3;i++)globalStrip.ColumnStyles.Add(new(SizeType.Percent,33.33f));
-        Panel GlobalCard(string title,Label line1,Label line2,Label? tag,Color bg,Color border,Color textCol){
-            var p=new Panel{Dock=DockStyle.Fill,BackColor=bg,Padding=new Padding(14,8,14,8),Margin=new Padding(4,0,4,0)};
-            var tl=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=3,ColumnCount=1,Margin=Padding.Empty};
-            tl.RowStyles.Add(new(SizeType.Absolute,28));tl.RowStyles.Add(new(SizeType.Percent,50));tl.RowStyles.Add(new(SizeType.Percent,50));
-            var headRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=tag!=null?2:1,RowCount=1,Margin=Padding.Empty};
-            headRow.RowStyles.Add(new(SizeType.Percent,100));
-            if(tag!=null){headRow.ColumnStyles.Add(new(SizeType.Percent,72));headRow.ColumnStyles.Add(new(SizeType.Percent,28));}
-            var head=new Label{Text=title,Font=new Font("Microsoft YaHei UI",11.5f,FontStyle.Bold),ForeColor=textCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-            headRow.Controls.Add(head,0,0);
-            if(tag!=null){tag.Font=new Font("Microsoft YaHei UI",11.5f,FontStyle.Bold);tag.ForeColor=textCol;tag.Dock=DockStyle.Fill;tag.TextAlign=ContentAlignment.MiddleRight;headRow.Controls.Add(tag,1,0);}
-            tl.Controls.Add(headRow,0,0);
-            line1.Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold);line1.ForeColor=Color.FromArgb(15,23,42);line1.Dock=DockStyle.Fill;line1.TextAlign=ContentAlignment.MiddleLeft;
-            line2.Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold);line2.ForeColor=Color.FromArgb(51,65,85);line2.Dock=DockStyle.Fill;line2.TextAlign=ContentAlignment.MiddleLeft;
-            tl.Controls.Add(line1,0,1);tl.Controls.Add(line2,0,2);p.Controls.Add(tl);return p;
-        }
-        globalStrip.Controls.Add(GlobalCard("🟢 IPv6 流量",gV6Down,gV6Up,gV6Share,Color.FromArgb(236,253,245),Color.FromArgb(167,243,208),Color.FromArgb(6,95,70)),0,0);
-        globalStrip.Controls.Add(GlobalCard("⚪ IPv4 流量",gV4Down,gV4Up,null,Color.FromArgb(248,250,252),Color.FromArgb(226,232,240),Color.FromArgb(51,65,85)),1,0);
-        globalStrip.Controls.Add(GlobalCard("🟡 未知",gProxyDown,gProxyUp,null,Color.FromArgb(254,243,199),Color.FromArgb(253,230,138),Color.FromArgb(146,64,14)),2,0);
-        root.Controls.Add(globalStrip);
-
-        // 4. 6 大平台监控卡片 (字号加大，指标更清晰更易读)
-        var cardGrid=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=3,Margin=Padding.Empty};
-        cardGrid.ColumnStyles.Add(new(SizeType.Percent,50));cardGrid.ColumnStyles.Add(new(SizeType.Percent,50));
-        for(int i=0;i<3;i++)cardGrid.RowStyles.Add(new(SizeType.Percent,100f/3));
-        root.Controls.Add(cardGrid);
-
-        foreach(var site in DownloadRouter.Sites){
-            var card=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,BackColor=Color.White,Padding=new Padding(16,8,16,6),Margin=new Padding(5)};
-            card.RowStyles.Add(new(SizeType.Absolute,38));card.RowStyles.Add(new(SizeType.Percent,100));card.RowStyles.Add(new(SizeType.Absolute,46));
-
-            // 卡片头部
-            var heading=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};
-            heading.ColumnStyles.Add(new(SizeType.Percent,100));heading.ColumnStyles.Add(new(SizeType.Absolute,150));
-            string siteTitle=site.Id switch{
-                "quark"=>"📁 夸克网盘",
-                "bilibili"=>"📺 Bilibili",
-                "steam"=>"🎮 Steam",
-                "epic"=>"⚡ Epic Games",
-                "youtube"=>"▶️ YouTube",
-                _=>"🌐 其他网站"
+            var tile = new ServiceTile(id);
+            cards[id] = tile; canvas.Controls.Add(tile);
+            tooltips.SetToolTip(tile.Toggle, id == "global" ? "IPv6 优先" : "仅 IPv6 内容连接");
+            tile.Toggle.CheckedChanged += async (_, _) =>
+            {
+                if (busy || closing) return;
+                serviceWork = Switch(id, tile.Toggle.Checked); await serviceWork;
             };
-            heading.Controls.Add(new Label{Text=siteTitle,Font=new Font("Microsoft YaHei UI",14f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft});
-            var toggle=new CheckBox{Text="仅 IPv6：关",Appearance=Appearance.Button,TextAlign=ContentAlignment.MiddleCenter,Dock=DockStyle.Fill,Margin=new Padding(1),FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(241,245,249),Font=new Font("Microsoft YaHei UI",10.5f,FontStyle.Bold)};
-            heading.Controls.Add(toggle);card.Controls.Add(heading);
-
-            // 核心三列度量 (IPv6, IPv4, 未知出口)
-            var metrics=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=new Padding(0,4,0,2)};
-            for(int i=0;i<3;i++)metrics.ColumnStyles.Add(new(SizeType.Percent,33.33f));
-
-            var shareLabel=new Label{Text="0.0%",Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold),ForeColor=Color.FromArgb(6,95,70),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight,AutoEllipsis=false};
-            // 累计流量采用深色高对比度，解决灰色看不清的问题：
-            // IPv6 采用 Deep Teal 森林深绿 Color.FromArgb(4,120,87)
-            // IPv4 采用 Solid Dark Slate 深黑灰 Color.FromArgb(30,41,59)
-            // 未知出口 采用 Deep Amber 浓郁琥珀棕 Color.FromArgb(146,64,14)
-            var v6Col=BuildProtocolBox(metrics,0,"🟢 IPv6",shareLabel,Color.FromArgb(240,253,244),Color.FromArgb(6,95,70),Color.FromArgb(4,120,87));
-            var v4Col=BuildProtocolBox(metrics,1,"⚪ IPv4",null,Color.FromArgb(248,250,252),Color.FromArgb(51,65,85),Color.FromArgb(30,41,59));
-            var unkCol=BuildProtocolBox(metrics,2,"🟡 未知",null,Color.FromArgb(255,251,235),Color.FromArgb(180,83,9),Color.FromArgb(146,64,14));
-            card.Controls.Add(metrics);
-
-            // 卡片底栏 (2 行清晰布局，彻底解决服务器域名与状态挤压省略号问题)
-            var footer=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,Margin=new Padding(0,2,0,0)};
-            footer.RowStyles.Add(new(SizeType.Absolute,22));footer.RowStyles.Add(new(SizeType.Percent,100));
-            var server=new Label{Text=site.Id=="global"?"公共双栈 CDN 路由":"主服务器：尚未发现",Font=new Font("Microsoft YaHei UI",10f),ForeColor=Color.FromArgb(71,85,105),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
-            var stateRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty};
-            stateRow.RowStyles.Add(new(SizeType.Percent,100));
-            stateRow.ColumnStyles.Add(new(SizeType.Percent,64));stateRow.ColumnStyles.Add(new(SizeType.Percent,36));
-            var state=new Label{Text="原连接方式",Font=new Font("Microsoft YaHei UI",10f,FontStyle.Bold),ForeColor=Color.FromArgb(51,65,85),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true};
-            var secBadge=new Label{Text=site.Id=="global"?"IPv6 优先 · 允许回退":"仅 IPv6 · 内容连接",Font=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold),ForeColor=Color.FromArgb(4,120,87),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight};
-            stateRow.Controls.Add(state,0,0);stateRow.Controls.Add(secBadge,1,0);
-            footer.Controls.Add(server,0,0);footer.Controls.Add(stateRow,0,1);card.Controls.Add(footer);
-
-            cardGrid.Controls.Add(card);
-            cards[site.Id]=new CardView(toggle,v4Col,v6Col,unkCol,state,shareLabel,server);
-            toggle.CheckedChanged+=async(_,_)=>await Switch(site.Id,toggle.Checked);
         }
-
-        // 5. 提示栏
-        hint.ForeColor=Color.FromArgb(51,65,85);root.Controls.Add(hint);
-
-        // 6. 底栏安全声明
-        var secFooter=new Label{Text="统计范围：经过助手的连接。退出前请暂停下载；仅 Wi-Fi 绑定需手动解除。",Font=new Font("Microsoft YaHei UI",9.5f),ForeColor=Color.FromArgb(100,116,139),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft};
-        root.Controls.Add(secFooter);
-
-        timer.Tick+=(_,_)=>RefreshCards();
-        clashToggle.Click+=async(_,_)=>{if(clashBusy||closing)return;clashWork=ToggleClashBinding();await clashWork;};
-        clashTimer.Tick+=async(_,_)=>{if(clashBusy||closing)return;clashWork=RefreshClashBinding();await clashWork;};
-        Shown+=(_,_)=>{timer.Start();startup=Initialize();};
-        FormClosing+=async(_,e)=>{if(closeReady)return;e.Cancel=true;if(closing)return;closing=true;timer.Stop();clashTimer.Stop();await startup;await clashWork;try{SaveAutomaticReport();await StopRouting();if(!testMode)await clashBinding.RestoreAsync();}catch(Exception ex){MessageBox.Show("恢复设置未完成："+ex.Message);closing=false;timer.Start();clashTimer.Start();return;}closeReady=true;Close();};
-    }
-
-    static TrafficColumn BuildProtocolBox(TableLayoutPanel parent,int col,string title,Label? extra,Color bg,Color headerCol,Color totalCol){
-        var p=new Panel{Dock=DockStyle.Fill,BackColor=bg,Padding=new Padding(10,5,10,5),Margin=new Padding(3,0,3,0)};
-        var tl=new TableLayoutPanel{Dock=DockStyle.Fill,RowCount=5,ColumnCount=1,Margin=Padding.Empty};
-        tl.RowStyles.Add(new(SizeType.Absolute,26));
-        tl.RowStyles.Add(new(SizeType.Percent,25));
-        tl.RowStyles.Add(new(SizeType.Percent,25));
-        tl.RowStyles.Add(new(SizeType.Percent,25));
-        tl.RowStyles.Add(new(SizeType.Percent,25));
-
-        var top=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=extra!=null?2:1,RowCount=1,Margin=Padding.Empty};
-        top.RowStyles.Add(new(SizeType.Percent,100));
-        if(extra!=null){top.ColumnStyles.Add(new(SizeType.AutoSize));top.ColumnStyles.Add(new(SizeType.Percent,100));}
-        var h=new Label{Text=title,Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold),ForeColor=headerCol,AutoSize=true,TextAlign=ContentAlignment.MiddleLeft};
-        top.Controls.Add(h,0,0);
-        if(extra!=null){
-            extra.Font=new Font("Microsoft YaHei UI",11f,FontStyle.Bold);
-            extra.ForeColor=headerCol;
-            extra.Dock=DockStyle.Fill;
-            extra.TextAlign=ContentAlignment.MiddleRight;
-            extra.AutoEllipsis=false;
-            top.Controls.Add(extra,1,0);
-        }
-        tl.Controls.Add(top,0,0);
-
-        var dr=new Label{Text="↓ 下载: 0 B/s",Font=new Font("Microsoft YaHei UI",10f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
-        var dt=new Label{Text="  累计: 0 B",Font=new Font("Microsoft YaHei UI",10f,FontStyle.Bold),ForeColor=totalCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
-        var ur=new Label{Text="↑ 上传: 0 B/s",Font=new Font("Microsoft YaHei UI",10f,FontStyle.Bold),ForeColor=Color.FromArgb(15,23,42),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
-        var ut=new Label{Text="  累计: 0 B",Font=new Font("Microsoft YaHei UI",10f,FontStyle.Bold),ForeColor=totalCol,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
-
-        tl.Controls.Add(dr,0,1);
-        tl.Controls.Add(dt,0,2);
-        tl.Controls.Add(ur,0,3);
-        tl.Controls.Add(ut,0,4);
-
-        p.Controls.Add(tl);parent.Controls.Add(p,col,0);
-        return new TrafficColumn(dr,dt,ur,ut);
-    }
-
-    void RefreshCards(){
-        if(busy||closing)return;
-        if(native!=null&&!native.Active)router?.MarkCaptureLost();router?.Sample();if(router==null)return;
-        long sumV4=0,sumV6=0,sumProxy=0;long sumUp4=0,sumUp6=0,sumUpProxy=0;
-        double sumRate4=0,sumRate6=0,sumRateProxy=0;double sumUpRate4=0,sumUpRate6=0,sumUpRateProxy=0;
-
-        foreach(var (id,c) in cards){
-            var r=router.Counters[id];
-            c.Four.Set(r.Rate4,r.V4,r.UploadRate4,r.Upload4);
-            c.Six.Set(r.Rate6,r.V6,r.UploadRate6,r.Upload6);
-            c.Unknown.Set(r.RateProxy,r.Proxy,r.UploadRateProxy,r.UploadProxy);
-            long bV4=Interlocked.Read(ref r.V4), bV6=Interlocked.Read(ref r.V6), bProxy=Interlocked.Read(ref r.Proxy);
-            double siteTotal=(double)bV4+bV6+bProxy;
-            c.Share.Text=siteTotal==0?"0.0%":(100d*bV6/siteTotal).ToString("F1",System.Globalization.CultureInfo.InvariantCulture)+"%";
-            long known=bV4+bV6;
-            string route=r.RateProxy>1024&&r.RateProxy>=Math.Max(r.Rate4,r.Rate6)?"主要走原代理":r.Rate4+r.Rate6>1024?(known<65536?"握手数据":r.Rate6>=r.Rate4?"正在使用 IPv6":"正在使用 IPv4"):r.State=="正在使用 IPv6"?"空闲 · 上次 IPv6":r.State;
-            c.State.Text=route;
-            c.Server.Text=id=="global"?"公共双栈 CDN 路由":"主服务器："+(string.IsNullOrEmpty(router.MainServer(id))?"尚未发现":router.MainServer(id));
-
-            if(router.ProtectionLost){
-                c.Switch.Text=id=="global"?"原路径：可尝试":"失效：未保护";
-                c.Switch.BackColor=id=="global"?Color.PapayaWhip:Color.MistyRose;
-                c.State.ForeColor=Color.DarkRed;
-                c.State.Text=id=="global"?"尝试原代理／直连":"接管失效，已阻断";
+        master.Click += async (_, _) =>
+        {
+            if (busy || closing || clashBusy) return;
+            serviceWork = SetAll(!cards.Values.All(c => c.Toggle.Checked)); await serviceWork;
+        };
+        split.Toggle.Click += async (_, _) =>
+        {
+            if (clashBusy || closing) return;
+            clashWork = ToggleClashBinding(); await clashWork;
+        };
+        timer.Tick += (_, _) => RefreshCards();
+        clashTimer.Tick += async (_, _) =>
+        {
+            if (clashBusy || closing) return;
+            clashWork = RefreshClashBinding(); await clashWork;
+        };
+        viewport.SizeChanged += (_, _) => LayoutDashboard();
+        DpiChanged += (_, _) => LayoutDashboard();
+        Shown += (_, _) => { LayoutDashboard(); timer.Start(); startup = Initialize(); };
+        FormClosing += async (_, e) =>
+        {
+            if (closeReady) return;
+            e.Cancel = true; if (closing) return;
+            closing = true; timer.Stop(); clashTimer.Stop(); SetControlsEnabled();
+            await startup; await clashWork; await serviceWork;
+            try
+            {
+                SaveAutomaticReport(); await StopRouting();
+                if (!testMode) await clashBinding.RestoreAsync();
             }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "恢复设置未完成：" + ex.Message);
+                closing = false; timer.Start(); clashTimer.Start(); SetControlsEnabled(); return;
+            }
+            closeReady = true; Close();
+        };
+        ApplyTheme(); LayoutDashboard();
+    }
 
-            sumV4+=bV4;sumV6+=bV6;sumProxy+=bProxy;
-            sumUp4+=Interlocked.Read(ref r.Upload4);sumUp6+=Interlocked.Read(ref r.Upload6);sumUpProxy+=Interlocked.Read(ref r.UploadProxy);
-            sumRate4+=r.Rate4;sumRate6+=r.Rate6;sumRateProxy+=r.RateProxy;
-            sumUpRate4+=r.UploadRate4;sumUpRate6+=r.UploadRate6;sumUpRateProxy+=r.UploadRateProxy;
+    void LayoutDashboard()
+    {
+        if (IsDisposed) return;
+        canvas.SuspendLayout();
+        int width = Math.Max(Px(480), viewport.ClientSize.Width - SystemInformation.VerticalScrollBarWidth);
+        canvas.Width = width;
+        float w = width / ScaleFactor, gap = 14, left = 24, inner = w - 48;
+        void Place(Control c, float x, float y, float cw, float ch) => c.SetBounds(Px(x), Px(y), Px(cw), Px(ch));
+        bool compact = w < 960;
+        Place(appIcon, left, 22, 42, 42);
+        Place(title, left + 54, 17, 202, 31);
+        Place(version, left + 260, 22, 62, 23);
+        Place(network, left + 54, 51, compact ? inner - 58 : inner - 540, 23);
+        float actionX = compact ? left : w - 24 - actions.Sum(b => (int)b.Tag! + 6) + 6;
+        foreach (var button in actions)
+        {
+            int bw = (int)button.Tag!;
+            Place(button, actionX, compact ? 88 : 29, bw, 34); actionX += bw + 6;
         }
+        float y = compact ? 142 : 96;
+        if (w >= 850)
+        {
+            float splitWidth = (inner - gap) * .52f;
+            Place(split, left, y, splitWidth, 166);
+            Place(share, left + splitWidth + gap, y, inner - splitWidth - gap, 166);
+            y += 180;
+        }
+        else
+        {
+            Place(split, left, y, inner, 166);
+            Place(share, left, y + 180, inner, 166); y += 360;
+        }
+        int statColumns = w >= 760 ? 3 : 1;
+        float statWidth = (inner - (statColumns - 1) * gap) / statColumns;
+        for (int i = 0; i < 3; i++)
+            Place(summaries[i], left + i % statColumns * (statWidth + gap),
+                y + i / statColumns * 166, statWidth, 152);
+        y += statColumns == 3 ? 166 : 498;
+        Place(sectionTitle, left, y + 7, 100, 32);
+        Place(serviceCount, left + 106, y + 7, 118, 32);
+        Place(masterText, w - 24 - 142, y + 7, 80, 32);
+        Place(master, w - 24 - 48, y + 9, 46, 28);
+        y += 52;
+        int columns = w >= 1100 ? 3 : w >= 730 ? 2 : 1;
+        float tileWidth = (inner - (columns - 1) * gap) / columns;
+        int index = 0;
+        foreach (var tile in cards.Values)
+        {
+            Place(tile, left + index % columns * (tileWidth + gap),
+                y + index / columns * 258, tileWidth, 244); index++;
+        }
+        y += ((cards.Count + columns - 1) / columns) * 258;
+        Place(hint, left, y, inner, 34);
+        canvas.Height = Px(y + 52);
+        canvas.ResumeLayout();
+    }
 
-        double totalKnown=(double)sumV4+sumV6+sumProxy;
-        string gShare=totalKnown==0?"0.0%":(100d*sumV6/totalKnown).ToString("F1",System.Globalization.CultureInfo.InvariantCulture)+"%";
-        gV6Share.Text=gShare+" 占比";
-        gV6Down.Text=$"↓ 下载: {TrafficStore.Bytes(sumRate6)}/s (累计 {TrafficStore.Bytes(sumV6)})";
-        gV6Up.Text=$"↑ 上传: {TrafficStore.Bytes(sumUpRate6)}/s (累计 {TrafficStore.Bytes(sumUp6)})";
-        gV4Down.Text=$"↓ 下载: {TrafficStore.Bytes(sumRate4)}/s (累计 {TrafficStore.Bytes(sumV4)})";
-        gV4Up.Text=$"↑ 上传: {TrafficStore.Bytes(sumUpRate4)}/s (累计 {TrafficStore.Bytes(sumUp4)})";
-        gProxyDown.Text=$"↓ 下载: {TrafficStore.Bytes(sumRateProxy)}/s (累计 {TrafficStore.Bytes(sumProxy)})";
-        gProxyUp.Text=$"↑ 上传: {TrafficStore.Bytes(sumUpRateProxy)}/s (累计 {TrafficStore.Bytes(sumProxy)})";
-
-        if(router.ProtectionLost&&!lossNotified){
-            lossNotified=true;SaveAutomaticReport();hint.Text="接管失效：普通网页仍尝试原路径；已接管下载拒绝请求。请暂停下载，旁路可能消耗 IPv4。";hint.ForeColor=Color.DarkRed;
-            if(!testMode)MessageBox.Show(this,"网络接管已失效！\n\n助手或网络内核已失去接管，无法阻止应用绕过助手继续使用 IPv4。请立即在夸克／浏览器中暂停下载。\n\n暂停后排除其他代理软件冲突，再全部关闭、重新开启。","IPv4 流量风险",MessageBoxButtons.OK,MessageBoxIcon.Error);
+    static Label MakeLabel(string text, float size, bool bold = false) => new()
+    {
+        Text = text, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
+        Font = new Font("Microsoft YaHei UI", size, bold ? FontStyle.Bold : FontStyle.Regular)
+    };
+    void ApplyTheme()
+    {
+        BackColor = viewport.BackColor = canvas.BackColor = DashboardTheme.Background;
+        foreach (var label in new[] { title, version, network, hint, sectionTitle, serviceCount, masterText })
+        {
+            label.BackColor = DashboardTheme.Background;
+            label.ForeColor = label == title || label == sectionTitle ? DashboardTheme.Text : DashboardTheme.Muted;
+        }
+        version.ForeColor = DashboardTheme.V6;
+        foreach (var button in actions) button.RefreshTheme();
+        if (router?.ProtectionLost == true) hint.ForeColor = DashboardTheme.Error;
+        canvas.Invalidate(true);
+    }
+    void SyncMaster()
+    {
+        int count = cards.Values.Count(c => c.Toggle.Checked);
+        master.Checked = count == cards.Count; master.Mixed = count > 0 && count < cards.Count;
+        masterText.Text = count == cards.Count ? "全部开启" : count == 0 ? "全部关闭" : "部分开启";
+        serviceCount.Text = $"{count} / {cards.Count} 已开启";
+        master.AccessibleDescription = masterText.Text;
+        master.Invalidate();
+    }
+    void SetControlsEnabled()
+    {
+        bool enabled = !busy && !closing && !clashBusy;
+        master.Enabled = enabled;
+        foreach (var tile in cards.Values) tile.Toggle.Enabled = enabled;
+        foreach (var button in actions) button.Enabled = !closing && !busy && !clashBusy;
+        split.Toggle.Enabled = enabled && !testMode;
+    }
+    void PaintSwitch(string id, bool on)
+    {
+        cards[id].Toggle.Checked = on;
+        if (!on) cards[id].State = "未接管";
+        cards[id].Invalidate(); SyncMaster();
+    }
+    void ResetTraffic()
+    {
+        router?.Reset();
+        foreach (var summary in summaries) summary.ResetHistory();
+        RefreshCards(false);
+        hint.Text = "累计流量和趋势已清零";
+    }
+    void RefreshCards(bool sample = true)
+    {
+        if (busy || closing) return;
+        if (native != null && !native.Active) router?.MarkCaptureLost();
+        if (sample) router?.Sample();
+        long[] totals = new long[3], uploaded = new long[3];
+        double[] rates = new double[3], uploadRates = new double[3];
+        foreach (var (id, tile) in cards)
+        {
+            var r = router?.Counters[id] ?? new DownloadCounter();
+            string server = router?.MainServer(id) ?? "尚未发现服务器";
+            if (server == "尚无内容连接") server = "尚未发现服务器";
+            tile.Update(r, server, router?.ProtectionLost == true);
+            totals[0] += Interlocked.Read(ref r.V6); totals[1] += Interlocked.Read(ref r.V4); totals[2] += Interlocked.Read(ref r.Proxy);
+            uploaded[0] += Interlocked.Read(ref r.Upload6); uploaded[1] += Interlocked.Read(ref r.Upload4); uploaded[2] += Interlocked.Read(ref r.UploadProxy);
+            rates[0] += r.Rate6; rates[1] += r.Rate4; rates[2] += r.RateProxy;
+            uploadRates[0] += r.UploadRate6; uploadRates[1] += r.UploadRate4; uploadRates[2] += r.UploadRateProxy;
+        }
+        for (int i = 0; i < 3; i++) summaries[i].Update(rates[i], uploadRates[i], totals[i], uploaded[i], sample);
+        share.Update(totals[0], totals[1], totals[2]); SyncMaster();
+        if (router?.ProtectionLost == true && !lossNotified)
+        {
+            lossNotified = true; SaveAutomaticReport();
+            hint.Text = "接管失效，请暂停下载，全部关闭后重新开启。";
+            hint.ForeColor = DashboardTheme.Error;
+            if (!testMode) MessageBox.Show(this,
+                "网络接管已失效，请先暂停下载。\n排除代理冲突后，全部关闭并重新开启接管。",
+                "接管失效", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
-    internal void SimulateOwnershipLoss(){if(router!=null){router.OwnershipProbe=()=>false;RefreshCards();}}
-    internal void PreviewClashBinding(){if(testMode)PaintClashBinding(new(new("WLAN","以太网",true,true,356,372,261,261),true,true,"代理节点走 Wi-Fi；DIRECT 与普通直连优先走有线。"));}
-    async Task Initialize(){
+    internal void SimulateOwnershipLoss()
+    {
+        if (router != null) { router.OwnershipProbe = () => false; RefreshCards(); }
+    }
+    internal void PreviewClashBinding()
+    {
+        if (testMode) PaintClashBinding(new(new("WLAN", "以太网", true, true, 356, 372, 261, 261),
+            true, true, "代理节点走 Wi-Fi；DIRECT 与普通直连优先走有线。"));
+    }
+    async Task Initialize()
+    {
         await SetAll(true);
-        if(testMode){
-            network.Text="本机界面测试：不进行公网探测";
-            clashToggle.Text="本机界面测试：未操作 Clash Verge";
-            clashToggle.Enabled=false;
-            clashStatus.Text="Clash 配置与网卡状态不会被更改。";
-            return;
+        if (testMode)
+        {
+            network.Text = "界面测试 · 不进行公网探测";
+            split.Status = "已关闭 · Clash Verge";
+            split.Invalidate(); return;
         }
-        if(closing)return;
-        try{
-            var result=await Diagnostics.Network();
-            if(!closing)network.Text=result.Verdict;
-        }catch{
-            if(!closing)network.Text="直连检测未完成，请查看实际连接流量";
+        if (closing) return;
+        try
+        {
+            var result = await Diagnostics.Network();
+            if (!closing) network.Text = result.Verdict;
         }
-        if(!closing){
-            await RefreshClashBinding();
-            clashToggle.Enabled=true;
-            clashTimer.Start();
+        catch { if (!closing) network.Text = "网络检测未完成"; }
+        if (!closing) { await RefreshClashBinding(); SetControlsEnabled(); clashTimer.Start(); }
+    }
+    async Task RefreshClashBinding()
+    {
+        if (testMode || closing || clashBusy || busy) return;
+        clashBusy = true; SetControlsEnabled();
+        try { await ReadAndPaintClashBinding(); }
+        finally { clashBusy = false; SetControlsEnabled(); }
+    }
+    async Task ReadAndPaintClashBinding()
+    {
+        try { var state = await clashBinding.ReadAsync(); if (!closing) PaintClashBinding(state); }
+        catch (Exception ex)
+        {
+            if (!closing)
+            {
+                // A failed read must not erase the last confirmed switch state.
+                split.Status = ClashError(ex); split.Confirmed = false;
+                split.Toggle.Mixed = true; split.Toggle.Invalidate(); split.Invalidate();
+                tooltips.SetToolTip(split, split.Status);
+            }
         }
     }
-    async Task RefreshClashBinding(){
-        if(testMode||closing||clashBusy)return;
-        clashBusy=true;
-        try{await ReadAndPaintClashBinding();}
-        finally{clashBusy=false;}
+    static string ClashError(Exception ex) => ex switch
+    {
+        HttpRequestException => "无法连接 Clash Verge，请先启动",
+        OperationCanceledException => "Clash Verge 请求超时，请重试",
+        JsonException => "Clash 返回内容无法解析",
+        IOException => "Clash 配置正在变动，请稍后重试",
+        _ => ex is InvalidOperationException or TimeoutException ? ex.Message : "读取失败，请检查 Clash Verge 和网卡"
+    };
+    void PaintClashBinding(SplitState state)
+    {
+        split.Confirmed = true;
+        split.Toggle.Checked = state.Active;
+        split.Toggle.Mixed = state.Managed && !state.Active;
+        split.BindingOnly = state.Active && !state.Managed;
+        split.EthernetName = string.IsNullOrWhiteSpace(state.Network.EthernetName) ? "以太网" : state.Network.EthernetName;
+        split.WifiName = string.IsNullOrWhiteSpace(state.Network.WifiName) ? "Wi-Fi" : state.Network.WifiName;
+        split.WiredOnline = state.Network.EthernetConnected; split.WifiOnline = state.Network.WifiConnected;
+        split.Status = state.Active ? state.Managed ? "已开启 · 代理 Wi-Fi / 直连有线" : "仅 Wi-Fi 绑定 · 再次点击解除"
+            : state.Managed ? "分流状态已变化 · 点击恢复" : "已关闭 · Clash Verge";
+        tooltips.SetToolTip(split, state.Message);
+        split.Toggle.Invalidate(); split.Invalidate();
     }
-    async Task ReadAndPaintClashBinding(){
-        try{var state=await clashBinding.ReadAsync();if(!closing)PaintClashBinding(state);}
-        catch(Exception ex){if(!closing){clashToggle.Text="🔀 代理走 Wi-Fi：状态未知，点击重试";clashToggle.Checked=false;clashToggle.BackColor=Color.FromArgb(241,245,249);clashToggle.ForeColor=Color.FromArgb(30,41,59);clashStatus.Text=ClashError(ex);}}
-    }
-    static string ClashError(Exception ex)=>ex switch {HttpRequestException=>"无法连接 Clash Verge，请先启动 Clash Verge 并检查本机控制器。",OperationCanceledException=>"Clash Verge 请求超时；状态未确认，请重试。",System.Text.Json.JsonException=>"Clash 返回内容无法解析，未确认当前状态。",IOException=>"Clash 配置正在变动或不可读，请稍后重试。",_=>ex is InvalidOperationException or TimeoutException?ex.Message:"读取或切换失败，请检查 Clash Verge 和网卡状态。"};
-    void PaintClashBinding(SplitState state){
-        bool active=state.Active;
-        clashToggle.Checked=active;
-        clashToggle.BackColor=active?Color.FromArgb(52,211,153):state.Managed?Color.FromArgb(251,191,36):Color.FromArgb(241,245,249);
-        clashToggle.ForeColor=active?Color.FromArgb(15,23,42):state.Managed?Color.FromArgb(15,23,42):Color.FromArgb(30,41,59);
-        clashToggle.Text=active?(state.Managed?"📶 分流已开启：代理 Wi-Fi / 直连有线":"📶 仅 Wi-Fi 绑定：已开启"):state.Managed?"⚠ 分流状态已变化，点击恢复默认":"🔀 双网卡分流：已关闭";
-        clashToggle.Enabled=true;
-        string wired=state.Network.EthernetConnected?"有线在线":"有线未连接";
-        string wifi=state.Network.WifiConnected?$"Wi-Fi 在线 ({state.Network.WifiName})":"Wi-Fi 未连接";
-        clashStatus.Text=$"{wired}；{wifi}"+Environment.NewLine+state.Message;
-    }
-    async Task ToggleClashBinding(){
-        if(testMode||closing||clashBusy||busy)return;
-        clashBusy=true;clashToggle.Enabled=false;foreach(var card in cards.Values)card.Switch.Enabled=false;
-        try{
-            bool hasLease=SplitRouting.ReadLease()!=null;
-            var current=await clashBinding.ReadAsync();
-            if(hasLease){
-                clashToggle.Text="正在恢复分流前的网络设置…";
-                clashStatus.Text="请等待校验完成；已有连接可能需要重新建立。";
-                if(SplitRouting.RestoresTun){await SetAll(false);hint.Text="将恢复 Clash 原有 TUN 模式；助手下载接管已暂停，避免两套接管冲突。";}
-                await clashBinding.RestoreAsync();
-            }else if(current.Active){
-                clashToggle.Text="正在恢复默认网卡绑定…";
-                await clashBinding.ClearWifiBindingAsync();
-            }else{
-                clashToggle.Text="正在启用 Wi-Fi 分流…";
-                if(current.Network.WifiConnected){
-                    if(current.Network.DualNicReady && Program.Admin){
-                        await clashBinding.EnableAsync();
-                    }else{
-                        await clashBinding.SetWifiBindingOnlyAsync(current.Network.WifiName);
-                    }
-                    if(router==null)await SetAll(true);
-                }else{
-                    throw new InvalidOperationException("未找到已连接的 Wi-Fi 网卡，无法绑定无线网。");
+    async Task ToggleClashBinding()
+    {
+        if (testMode || closing || clashBusy || busy) return;
+        clashBusy = true; SetControlsEnabled();
+        try
+        {
+            bool hasLease = SplitRouting.ReadLease() != null;
+            var current = await clashBinding.ReadAsync();
+            if (hasLease)
+            {
+                split.Status = "正在恢复原网络设置…"; split.Invalidate();
+                if (SplitRouting.RestoresTun)
+                {
+                    await SetAll(false); hint.Text = "将恢复 Clash TUN 模式，下载接管已暂停";
                 }
+                await clashBinding.RestoreAsync();
+            }
+            else if (current.Active)
+            {
+                split.Status = "正在解除 Wi-Fi 绑定…"; split.Invalidate();
+                await clashBinding.ClearWifiBindingAsync();
+            }
+            else
+            {
+                split.Status = "正在启用分流…"; split.Invalidate();
+                if (!current.Network.WifiConnected) throw new InvalidOperationException("未找到已连接的 Wi-Fi 网卡");
+                if (current.Network.DualNicReady && Program.Admin) await clashBinding.EnableAsync();
+                else await clashBinding.SetWifiBindingOnlyAsync(current.Network.WifiName);
+                if (router == null) await SetAll(true);
             }
             await ReadAndPaintClashBinding();
-        }catch(Exception ex){
-            if(!closing)MessageBox.Show(this,ClashError(ex),"流量分流未完成",MessageBoxButtons.OK,MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            if (!closing) MessageBox.Show(this, ClashError(ex), "分流未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             await ReadAndPaintClashBinding();
-        }finally{clashBusy=false;if(!closing){clashToggle.Enabled=true;foreach(var card in cards.Values)card.Switch.Enabled=!busy;}}
+        }
+        finally { clashBusy = false; SetControlsEnabled(); }
     }
-    void PaintSwitch(string id,bool on){
-        var c=cards[id];c.State.ForeColor=Color.FromArgb(30,41,59);c.Switch.Checked=on;
-        c.Switch.Text=(id=="global"?"IPv6 优先":"仅 IPv6")+(on?"：开":"：关");
-        c.Switch.BackColor=on?Color.FromArgb(167,243,208):Color.FromArgb(241,245,249);
-        c.Switch.ForeColor=on?Color.FromArgb(6,95,70):Color.FromArgb(71,85,105);
+    async Task SetAll(bool on)
+    {
+        if (busy || closing) return;
+        if (on && router?.ProtectionLost == true) { hint.Text = "请先暂停下载，全部关闭后再开启"; return; }
+        busy = true; SetControlsEnabled();
+        try
+        {
+            if (router == null && on) await StartRouting();
+            if (closing) return;
+            if (router != null)
+            {
+                if (on) router.EnableAll();
+                else { SaveAutomaticReport(); await StopRouting(); lossNotified = false; }
+            }
+            foreach (var id in cards.Keys) PaintSwitch(id, on);
+            hint.ForeColor = DashboardTheme.Muted;
+            hint.Text = on ? "接管已开启，重新开始下载或刷新视频后生效" : "接管已关闭，新连接使用原连接方式";
+        }
+        catch (Exception ex)
+        {
+            await StopRouting(); foreach (var id in cards.Keys) PaintSwitch(id, false);
+            hint.Text = "未开启：" + ex.Message; hint.ForeColor = DashboardTheme.Error;
+        }
+        finally { busy = false; SetControlsEnabled(); RefreshCards(false); }
     }
-    async Task SetAll(bool on){
-        if(busy||closing)return;
-        if(on&&router?.ProtectionLost==true){hint.Text="请先暂停下载，全部关闭后再重新开启。";return;}
-        busy=true;foreach(var c in cards.Values)c.Switch.Enabled=false;
-        try{
-            if(router==null&&on)await StartRouting();
-            if(closing)return;
-            if(router!=null){if(on)router.EnableAll();else {await StopRouting();lossNotified=false;}}
-            foreach(var id in cards.Keys){PaintSwitch(id,on);if(!on)cards[id].State.Text="未保护：已允许 IPv4／原代理";}
-            hint.ForeColor=Color.FromArgb(30,41,59);
-            hint.Text=on?"已开启：网站 IPv6 优先，内容下载仅 IPv6。请暂停后重新开始下载或刷新视频。":"全部分类已关闭，新连接使用系统或原代理路径；继续下载可能消耗 IPv4 额度。";
-        }catch(Exception ex){await StopRouting();foreach(var id in cards.Keys)PaintSwitch(id,false);hint.Text="未开启："+ex.Message;}
-        finally{busy=false;if(!closing)foreach(var c in cards.Values)c.Switch.Enabled=true;}
+    async Task Switch(string id, bool on)
+    {
+        if (busy || closing) return;
+        if (router?.ProtectionLost == true)
+        {
+            busy = true; cards[id].Toggle.Checked = router.Counters[id].Enabled; busy = false;
+            SyncMaster(); hint.Text = "接管失效：请先暂停下载，全部关闭后再开启"; return;
+        }
+        busy = true; SetControlsEnabled();
+        try
+        {
+            if (router == null && on) await StartRouting(id);
+            if (closing) return;
+            router?.Enable(id, on); PaintSwitch(id, on);
+            hint.Text = on ? id == "global" ? "其他网站已开启 IPv6 优先" : "已开启仅 IPv6 内容连接，请重新开始下载"
+                : "该服务已关闭接管，新连接使用原连接方式";
+        }
+        catch (Exception ex)
+        {
+            await StopRouting(); foreach (var key in cards.Keys) PaintSwitch(key, false);
+            cards[id].State = "未开启"; hint.Text = ex.Message;
+        }
+        finally { busy = false; SetControlsEnabled(); RefreshCards(false); }
     }
-    static Label Label(string text,float size)=>new(){Text=text,Font=new Font("Microsoft YaHei UI",size),Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true,ForeColor=Color.FromArgb(30,41,59)};
-    async Task Switch(string id,bool on){
-        if(busy)return;
-        if(router?.ProtectionLost==true){busy=true;cards[id].Switch.Checked=router.Counters[id].Enabled;busy=false;hint.Text="失效未保护：先暂停下载，再全部关闭并重新开启。";return;}
-        busy=true;foreach(var c in cards.Values)c.Switch.Enabled=false;
-        try{
-            if(router==null&&on)await StartRouting(id);
-            if(closing)return;
-            router?.Enable(id,on);PaintSwitch(id,on);
-            hint.Text=on?(id=="global"?"已开启 IPv6 优先，不可用时尝试 IPv4 或原代理。请重新建立连接。":"已开启仅 IPv6 下载，不可用时请求会失败。请暂停后重新开始下载。"):"该分类已关闭，新连接可以使用 IPv4 或原代理。";
-        }catch(Exception ex){await StopRouting();foreach(var key in cards.Keys)PaintSwitch(key,false);cards[id].State.Text="未开启："+ex.Message;hint.Text=ex.Message;}
-        finally{busy=false;if(!closing)foreach(var c in cards.Values)c.Switch.Enabled=true;}
-    }
-    async Task StartRouting(string? selected=null){
-        router=new DownloadRouter{ProductionPolicies=true};
+    async Task StartRouting(string? selected = null)
+    {
+        router = new DownloadRouter { ProductionPolicies = true };
         await router.Start(!testMode);
-        foreach(var pair in router.Counters)router.Enable(pair.Key,selected==null||pair.Key==selected);
-        if(!testMode){native=new NativeCapture();await native.Start(router);}
+        foreach (var pair in router.Counters) router.Enable(pair.Key, selected == null || pair.Key == selected);
+        if (!testMode) { native = new NativeCapture(); await native.Start(router); }
     }
-    async Task StopRouting(){
-        if(native!=null){await native.DisposeAsync();native=null;}
-        if(router!=null){await router.DisposeAsync();router=null;}
+    async Task StopRouting()
+    {
+        if (native != null) { await native.DisposeAsync(); native = null; }
+        if (router != null) { await router.DisposeAsync(); router = null; }
     }
-    const string UsageText="""
+    const string UsageText = """
         快速上手
-        先暂停现有下载，打开助手，再重新开始下载或刷新视频。看对应分类的实际速度、累计流量和主要服务器。
+        暂停现有下载，打开助手后重新开始下载或刷新视频。
 
-        分类开关
-        六个分类默认开启。其他网站优先 IPv6，失败后尝试 IPv4 或原代理。五个下载和视频分类仅使用 IPv6；内容服务器没有可用 IPv6 时请求会失败，可关闭对应开关后重试。登录和列表等请求仍可能使用 IPv4，已有连接需暂停重开。
+        服务开关
+        六个服务默认开启，总开关可批量切换。其他网站优先 IPv6，失败后使用原路径。五个下载和视频分类仅使用 IPv6 内容连接；无法连接时，可关闭对应服务后重试。登录和文件列表可使用 IPv4。
 
-        流量统计
-        IPv6、IPv4、未知均显示下载和上传。未知表示经原有代理等路径转发，无法确认最终出口协议。IPv6 占比仅按下载计算，未知也计入总量；绕过助手的连接不计入面板。
+        流量
+        圆环和比例条按累计下载计算，包含未知流量。三张流量卡显示下载、上传及各自累计量，趋势保留最近 60 秒。未知表示经原有代理转发，不能确认最终出口。
 
         有线 / Wi-Fi 分流
-        默认关闭，手动开启。完整分流将普通直连和 DIRECT 放在有线，代理节点放在 Wi-Fi；关闭或退出时恢复，异常退出由恢复进程处理。
-        若界面显示“仅 Wi-Fi 绑定”，DIRECT 也会受影响；需再次点击解除绑定，退出不会自动清除。
+        默认关闭。完整分流：直连走有线，代理节点走 Wi-Fi，关闭或退出时恢复；异常退出由恢复进程处理。
+        仅 Wi-Fi 绑定：DIRECT 同样受绑定影响，需再次点击解除，退出不会自动清除。
 
         退出与诊断
-        退出前先暂停下载，恢复原路径后可能使用 IPv4。连接异常时可导出 JSON 报告，包含平台 CDN 域名、流量与接管状态，不记录 URL、Cookie、Token 或文件名。
+        退出前暂停下载。详细诊断可查看连接；导出报告包含平台 CDN 域名、流量与接管状态，不记录 URL、Cookie、Token 或文件名。
         """;
-    object Report()=>new{schema="ipv6-download-assistant/3",version="3.0.11",timeUtc=DateTime.UtcNow,
-        protectionLost=router?.ProtectionLost,nativeCapture=native?.Active??false,network=network.Text,
-        nativeExitCode=native?.ExitCode,routerHealth=router?.Health(),
-        scope="Sent and received relay stream bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",
-        services=router?.Counters.Select(p=>new{id=p.Key,enabled=p.Value.Enabled,ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy),ipv4RateBps=p.Value.Rate4,ipv6RateBps=p.Value.Rate6,proxyUnknownRateBps=p.Value.RateProxy,ipv4Uploaded=Interlocked.Read(ref p.Value.Upload4),ipv6Uploaded=Interlocked.Read(ref p.Value.Upload6),proxyUnknownUploaded=Interlocked.Read(ref p.Value.UploadProxy),ipv4UploadRateBps=p.Value.UploadRate4,ipv6UploadRateBps=p.Value.UploadRate6,proxyUnknownUploadRateBps=p.Value.UploadRateProxy,failures=Interlocked.Read(ref p.Value.Failures),state=p.Value.State}).ToArray(),servers=router?.ServerReport()};
-    void WriteReport(string path)=>File.WriteAllText(path,JsonSerializer.Serialize(Report(),new JsonSerializerOptions{WriteIndented=true}));
-    void SaveAutomaticReport(){if(testMode||router==null)return;try{string dir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","reports");Directory.CreateDirectory(dir);WriteReport(Path.Combine(dir,DateTime.Now.ToString("yyyyMMdd-HHmmss")+".json"));}catch{}}
-    void Export(){using var save=new SaveFileDialog{Filter="JSON 诊断报告|*.json",FileName="IPv6-download-report.json"};if(save.ShowDialog()!=DialogResult.OK)return;try{WriteReport(save.FileName);hint.Text="报告已导出：包含平台 CDN 域名与流量，不含 URL、账号、文件名或普通网站域名。";}catch(Exception ex){hint.Text="导出失败："+ex.GetType().Name;}}
+    object Report() => new
+    {
+        schema = "ipv6-download-assistant/3", version = Version, timeUtc = DateTime.UtcNow,
+        protectionLost = router?.ProtectionLost, nativeCapture = native?.Active ?? false, network = network.Text,
+        nativeExitCode = native?.ExitCode, routerHealth = router?.Health(),
+        scope = "Sent and received relay stream bytes, not campus billing. Enabled content is IPv6-only; ordinary websites may fall back. Existing/bypass/proxied/unknown traffic may be outside capture. Proxy exit family unknown.",
+        services = router?.Counters.Select(p => new
+        {
+            id = p.Key, enabled = p.Value.Enabled, ipv4 = Interlocked.Read(ref p.Value.V4),
+            ipv6 = Interlocked.Read(ref p.Value.V6), proxyUnknown = Interlocked.Read(ref p.Value.Proxy),
+            ipv4RateBps = p.Value.Rate4, ipv6RateBps = p.Value.Rate6, proxyUnknownRateBps = p.Value.RateProxy,
+            ipv4Uploaded = Interlocked.Read(ref p.Value.Upload4), ipv6Uploaded = Interlocked.Read(ref p.Value.Upload6),
+            proxyUnknownUploaded = Interlocked.Read(ref p.Value.UploadProxy),
+            ipv4UploadRateBps = p.Value.UploadRate4, ipv6UploadRateBps = p.Value.UploadRate6,
+            proxyUnknownUploadRateBps = p.Value.UploadRateProxy,
+            failures = Interlocked.Read(ref p.Value.Failures), state = p.Value.State
+        }).ToArray(), servers = router?.ServerReport()
+    };
+    void WriteReport(string path) => File.WriteAllText(path, JsonSerializer.Serialize(Report(), new JsonSerializerOptions { WriteIndented = true }));
+    void SaveAutomaticReport()
+    {
+        if (testMode || router == null) return;
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IPv6Lens", "reports");
+            Directory.CreateDirectory(dir);
+            WriteReport(Path.Combine(dir, DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json"));
+        }
+        catch { }
+    }
+    void Export()
+    {
+        using var save = new SaveFileDialog { Filter = "JSON 诊断报告|*.json", FileName = "IPv6-download-report.json" };
+        if (save.ShowDialog(this) != DialogResult.OK) return;
+        try { WriteReport(save.FileName); hint.Text = "诊断报告已导出"; }
+        catch (Exception ex) { hint.Text = "导出失败：" + ex.GetType().Name; }
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            timer.Dispose(); clashTimer.Dispose(); tooltips.Dispose();
+            var image = appIcon.Image; appIcon.Image = null; image?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 }

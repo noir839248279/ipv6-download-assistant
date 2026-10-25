@@ -7,10 +7,12 @@
 ## 下载与快速开始
 
 - [下载最新版免安装包](https://github.com/noir839248279/ipv6-download-assistant/releases/latest)
-- [当前版本 v3.0.11](https://github.com/noir839248279/ipv6-download-assistant/releases/tag/v3.0.11)
+- [已发布版本 v3.0.11](https://github.com/noir839248279/ipv6-download-assistant/releases/tag/v3.0.11)
 - [历史版本](https://github.com/noir839248279/ipv6-download-assistant/releases)
 
 普通用户请下载 `IPv6-Download-Assistant-3.0.11-win-x64-portable.zip`。GitHub 自动生成的 `Source code (zip)` 是源码，不是可直接运行的软件。
+
+当前源码为 **v3.1.0 仪表盘改版**，可按文末命令本地构建；公开发行包仍为 v3.0.11。
 
 免安装包包含 .NET 10 运行时和独立 Mihomo 内核，无需安装 .NET 或 WSL。程序尚未签名，首次运行时 Windows 可能显示未知发布者提示。
 
@@ -23,13 +25,15 @@
 
 ## 界面上的数据怎么看
 
-主界面分为**其他网站、夸克网盘、Bilibili、YouTube、Steam、Epic Games**六个分类。每个分类都有三栏上下行速度和累计流量：
+v3.1.0 主界面按**夸克网盘、Bilibili、Steam、Epic Games、YouTube、其他网站**排列。每张服务卡显示下载速度、上传速度、主要服务器、三色累计下载比例与当前策略：
 
 - **IPv6**：助手通过 IPv6 对外连接时中继的数据。
 - **IPv4**：助手通过 IPv4 对外连接时中继的数据。
 - **未知**：数据交给了本机原有代理等上游路径，助手无法确认其最终出口是 IPv4 还是 IPv6。本机代理地址为 `127.0.0.1`，不等于远端下载走 IPv4。
 
-顶部汇总六个分类的流量；各分类显示当前连接状态和主要内容服务器。IPv6 下载占比按 `IPv6 下载量 ÷（IPv6 + IPv4 + 未知下载量）` 计算，不含上传。**全部开启、全部关闭、清零流量、导出报告、详细诊断、使用说明**按钮位于右上方。
+顶部圆环汇总六个分类的累计下载。三张流量卡分别显示 IPv6、IPv4、未知的下载速度、上传速度、累计下载、累计上传和最近 60 秒下载趋势。IPv6 下载占比按 `IPv6 下载量 ÷（IPv6 + IPv4 + 未知下载量）` 计算，不含上传。
+
+服务标题右侧的总开关与六张服务卡双向联动，显示全部开启、全部关闭或部分开启。右上方保留**使用说明、详细诊断、导出报告、清零流量**，并提供深色 / 浅色主题切换。窗口缩小时自动切换两列或单列，可滚动查看全部服务。清零同时清除累计量、速率和趋势。
 
 这里统计的是经过助手中继的数据。绕过助手的连接不会计入，因此面板数值不能代替整机流量统计或校园网账单。
 
@@ -76,6 +80,12 @@
 ```
 
 程序输出到 `app/IPv6Lens.exe`。
+
+界面回归测试只启动本机隔离中继，不修改系统代理、Clash 或网卡配置；输出 JSON 检查结果及深色、浅色、分流、失效和窄窗口截图：
+
+```powershell
+./app/IPv6Lens.exe --dashboard-test 'C:/path/to/existing-folder/dashboard'
+```
 
 制作免安装包：
 

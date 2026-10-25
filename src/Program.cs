@@ -39,11 +39,25 @@ internal static class Program
         if(args.Length==2&&args[0]=="--split-live-test"){SplitRoutingTests.Live(args[1]);return;}
         if(args.Length==2&&args[0]=="--split-owner-test"){SplitRoutingTests.Owner(args[1]);return;}
         ApplicationConfiguration.Initialize();
-        bool uiSmoke=args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";
+        bool dashboardTest=args.Length==2&&args[0]=="--dashboard-test";
+        bool uiSmoke=dashboardTest||args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";
         bool uiNative=args.Length==2&&args[0]=="--ui-native-test";
         if(!uiSmoke&&args.Length==0&&!Admin){try{Process.Start(new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=true,Verb="runas"});}catch{MessageBox.Show("未开启网络接管。Steam/Epic 接管需要管理员权限。");}return;}
         if(!uiSmoke){try{SplitRouting.RecoverStale();}catch(Exception ex){MessageBox.Show("上次分流恢复未完成："+ex.Message);return;}}
         var form=new DownloadForm(uiSmoke);
+        if(dashboardTest){
+            form.ShowInTaskbar=false;form.Opacity=0;
+            form.Shown+=async(_,_)=>{
+                try{
+                    var result=await form.VerifyDashboard(args[1]);
+                    File.WriteAllText(args[1]+".json",System.Text.Json.JsonSerializer.Serialize(result,new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
+                }catch(Exception ex){
+                    Environment.ExitCode=1;
+                    File.WriteAllText(args[1]+".json",System.Text.Json.JsonSerializer.Serialize(new{state="failed",error=ex.ToString()}));
+                }finally{form.Close();}
+            };
+            Application.Run(form);return;
+        }
         if(uiSmoke||uiNative) {
             form.ShowInTaskbar=false;form.Opacity=0;
             var timer=new System.Windows.Forms.Timer {Interval=uiNative?12000:3500};
