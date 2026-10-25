@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.1.2";
+    const string Version = "3.1.3";
     DownloadRouter? router;
     NativeCapture? native;
     readonly SplitRouting clashBinding = new();
@@ -27,7 +27,7 @@ internal sealed partial class DownloadForm : Form
     readonly ToolTip tooltips = new();
     readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     readonly System.Windows.Forms.Timer clashTimer = new() { Interval = 10000 };
-    bool busy, closing, closeReady, lossNotified, clashBusy;
+    bool busy, closing, closeReady, lossNotified, clashBusy, clashPolling, layingOut;
     readonly bool testMode;
     Task startup = Task.CompletedTask, clashWork = Task.CompletedTask, serviceWork = Task.CompletedTask;
     float ScaleFactor => DeviceDpi / 96f;
@@ -81,13 +81,13 @@ internal sealed partial class DownloadForm : Form
         };
         split.Toggle.Click += async (_, _) =>
         {
-            if (clashBusy || closing) return;
+            if (clashBusy || clashPolling || closing) return;
             clashWork = ToggleClashBinding(); await clashWork;
         };
         timer.Tick += (_, _) => RefreshCards();
         clashTimer.Tick += async (_, _) =>
         {
-            if (clashBusy || closing) return;
+            if (clashBusy || clashPolling || closing) return;
             clashWork = RefreshClashBinding(); await clashWork;
         };
         viewport.SizeChanged += (_, _) => LayoutDashboard();
@@ -116,8 +116,30 @@ internal sealed partial class DownloadForm : Form
 
     void LayoutDashboard()
     {
-        if (IsDisposed) return;
+        if (IsDisposed || layingOut) return;
+        layingOut = true;
+        int scrollY = -viewport.AutoScrollPosition.Y;
+        viewport.SuspendLayout();
         canvas.SuspendLayout();
+        try
+        {
+            LayoutDashboardContent();
+            // Forget the old extent when a column change shortens the canvas.
+            viewport.AutoScrollMinSize = new(0, canvas.Height);
+        }
+        finally
+        {
+            canvas.ResumeLayout();
+            viewport.ResumeLayout(true);
+            viewport.PerformLayout();
+            viewport.AutoScrollPosition = new(0,
+                Math.Min(scrollY, Math.Max(0, canvas.Height - viewport.ClientSize.Height)));
+            layingOut = false;
+        }
+    }
+
+    void LayoutDashboardContent()
+    {
         int width = Math.Max(Px(480), viewport.ClientSize.Width - SystemInformation.VerticalScrollBarWidth);
         canvas.Width = width;
         float w = width / ScaleFactor, gap = 14, left = 24, inner = w - 48;
@@ -168,7 +190,6 @@ internal sealed partial class DownloadForm : Form
         y += ((cards.Count + columns - 1) / columns) * 258;
         Place(hint, left, y, inner, 34);
         canvas.Height = Px(y + 52);
-        canvas.ResumeLayout();
     }
 
     static Label MakeLabel(string text, float size, bool bold = false) => new()
@@ -204,7 +225,7 @@ internal sealed partial class DownloadForm : Form
         master.Enabled = enabled;
         foreach (var tile in cards.Values) tile.Toggle.Enabled = enabled;
         foreach (var button in actions) button.Enabled = !closing && !busy && !clashBusy;
-        split.Toggle.Enabled = enabled && !testMode;
+        split.Toggle.Enabled = enabled && !clashPolling && !testMode;
     }
     void PaintSwitch(string id, bool on)
     {
@@ -276,16 +297,21 @@ internal sealed partial class DownloadForm : Form
         catch { if (!closing) network.Text = "网络检测未完成"; }
         if (!closing) { await RefreshClashBinding(); SetControlsEnabled(); clashTimer.Start(); }
     }
-    async Task RefreshClashBinding()
+    async Task RefreshClashBinding(Func<Task<SplitState>>? isolatedReader = null)
     {
-        if (testMode || closing || clashBusy || busy) return;
-        clashBusy = true; SetControlsEnabled();
-        try { await ReadAndPaintClashBinding(); }
-        finally { clashBusy = false; SetControlsEnabled(); }
+        if ((testMode && isolatedReader == null) || closing || clashBusy || clashPolling || busy) return;
+        if (!testMode && isolatedReader != null) throw new InvalidOperationException("Isolated reader requires UI test mode.");
+        clashPolling = true; SetControlsEnabled();
+        try { await ReadAndPaintClashBinding(isolatedReader); }
+        finally { clashPolling = false; SetControlsEnabled(); }
     }
-    async Task ReadAndPaintClashBinding()
+    async Task ReadAndPaintClashBinding(Func<Task<SplitState>>? isolatedReader = null)
     {
-        try { var state = await clashBinding.ReadAsync(); if (!closing) PaintClashBinding(state); }
+        try
+        {
+            var state = await (isolatedReader == null ? clashBinding.ReadAsync() : isolatedReader());
+            if (!closing) PaintClashBinding(state);
+        }
         catch (Exception ex)
         {
             if (!closing)
@@ -321,7 +347,7 @@ internal sealed partial class DownloadForm : Form
     }
     async Task ToggleClashBinding()
     {
-        if (testMode || closing || clashBusy || busy) return;
+        if (testMode || closing || clashBusy || clashPolling || busy) return;
         clashBusy = true; SetControlsEnabled();
         try
         {

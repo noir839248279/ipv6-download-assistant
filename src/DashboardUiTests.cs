@@ -24,6 +24,75 @@ internal sealed partial class DownloadForm
         }
         Check(DefaultsActive && master.Checked && !master.Mixed, "Startup: six services and master enabled");
         Check(!SplitActive, "Split routing defaults to off independently of services");
+        var pendingRead = new TaskCompletionSource<SplitState>();
+        var polling = RefreshClashBinding(() => pendingRead.Task);
+        try
+        {
+            Check(clashPolling && !clashBusy && master.Enabled &&
+                cards.Values.All(c => c.Toggle.Enabled && c.Toggle.Checked) && actions.All(b => b.Enabled),
+                "Pending read-only Clash polling leaves service switches and actions interactive");
+            cards["quark"].Toggle.Checked = false;
+            Check(!router!.Counters["quark"].Enabled && router.Counters["bilibili"].Enabled,
+                "A service switch remains effective during read-only polling");
+            cards["quark"].Toggle.Checked = true;
+        }
+        finally
+        {
+            pendingRead.SetResult(new(new("WLAN", "Ethernet", true, true, 356, 372, 261, 261),
+                false, false, "Isolated polling fixture"));
+            await polling;
+        }
+        Check(!clashPolling && DefaultsActive, "Polling completion preserves all selected service policies");
+        await RefreshClashBinding(() => Task.FromException<SplitState>(new IOException("Isolated read failure")));
+        Check(master.Enabled && DefaultsActive && split.Toggle.Mixed && !split.Confirmed,
+            "Failed polling preserves service selection and marks only split status unconfirmed");
+        PaintClashBinding(new(new("WLAN", "Ethernet", true, true, 356, 372, 261, 261),
+            false, false, "Isolated split off fixture"));
+        clashBusy = true; SetControlsEnabled();
+        Check(!master.Enabled && cards.Values.All(c => !c.Toggle.Enabled),
+            "Mutating split operations still lock service controls");
+        foreach (bool light in new[] { false, true })
+        {
+            DashboardTheme.Light = light;
+            using var image = new Bitmap(master.Width, master.Height);
+            master.DrawToBitmap(image, new Rectangle(Point.Empty, master.Size));
+            Color track = image.GetPixel(Px(12), master.Height / 2);
+            Check(track.ToArgb() == DashboardTheme.V6.ToArgb(),
+                $"Checked but temporarily locked switches retain their on color ({(light ? "light" : "dark")})");
+            split.Toggle.DrawToBitmap(image, new Rectangle(Point.Empty, split.Toggle.Size));
+            Check(image.GetPixel(Px(36), split.Toggle.Height / 2).ToArgb() == DashboardTheme.Line.ToArgb(),
+                $"Disabled off switches retain their off color ({(light ? "light" : "dark")})");
+        }
+        DashboardTheme.Light = false;
+        clashBusy = false; SetControlsEnabled();
+        var layoutSamples = new List<object>();
+        bool contentBounded = true;
+        foreach (int width in new[] { 1280, 920, 560, 1280, 920, 1280 })
+        {
+            ClientSize = new(Px(width), Px(850)); LayoutDashboard();
+            viewport.AutoScrollPosition = new(0, canvas.Height);
+            for (int pass = 0; pass < 3; pass++) LayoutDashboard();
+            int trailing = canvas.Height - hint.Bottom;
+            int extent = viewport.DisplayRectangle.Height;
+            layoutSamples.Add(new { width, dpi = DeviceDpi, canvas = canvas.Bounds,
+                hintBottom = hint.Bottom, trailing, extent, viewport = viewport.ClientSize,
+                scroll = viewport.AutoScrollPosition, display = viewport.DisplayRectangle });
+            contentBounded &= trailing >= 0 && trailing <= Px(24) &&
+                Math.Abs(extent - Math.Max(canvas.Height, viewport.ClientSize.Height)) <= Px(2) &&
+                canvas.Bottom >= Math.Min(canvas.Height, viewport.ClientSize.Height) - Px(2) &&
+                !viewport.HorizontalScroll.Visible;
+        }
+        File.WriteAllText(prefix + ".layout.json", JsonSerializer.Serialize(layoutSamples,
+            new JsonSerializerOptions { WriteIndented = true, IncludeFields = true }));
+        Check(contentBounded, "Repeated resize and bottom scrolling keep content extent within the footer");
+        DashboardTheme.Light = true; ApplyTheme();
+        using (var bottom = new Bitmap(viewport.Width, viewport.Height))
+        {
+            viewport.DrawToBitmap(bottom, new Rectangle(Point.Empty, viewport.Size));
+            bottom.Save(prefix + ".bottom.png");
+        }
+        DashboardTheme.Light = false; ApplyTheme();
+        viewport.AutoScrollPosition = Point.Empty;
         ClientSize = new(Px(1280), Px(920)); LayoutDashboard();
         Check(cards["quark"].Top == cards["steam"].Top && cards["epic"].Top > cards["quark"].Top,
             "Desktop window uses three service columns at actual display DPI");

@@ -114,8 +114,7 @@ internal sealed class DashboardToggle : CheckBox
         g.SmoothingMode = SmoothingMode.AntiAlias;
         float w = Width / s, h = Height / s;
         var track = new RectangleF(2, (h - 24) / 2, w - 4, 24);
-        Color color = !Enabled ? DashboardTheme.Line :
-            Mixed ? DashboardTheme.Unknown : Checked ? DashboardTheme.V6 : DashboardTheme.Line;
+        Color color = Mixed ? DashboardTheme.Unknown : Checked ? DashboardTheme.V6 : DashboardTheme.Line;
         using var path = DashboardSurfaceTogglePath(track);
         using var brush = new SolidBrush(color);
         g.FillPath(brush, path);
