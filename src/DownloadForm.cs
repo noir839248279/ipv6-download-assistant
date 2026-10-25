@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.1.0";
+    const string Version = "3.1.1";
     DownloadRouter? router;
     NativeCapture? native;
     readonly SplitRouting clashBinding = new();
@@ -386,7 +386,7 @@ internal sealed partial class DownloadForm : Form
     async Task Switch(string id, bool on)
     {
         if (busy || closing) return;
-        if (router?.ProtectionLost == true)
+        if (on && router?.ProtectionLost == true)
         {
             busy = true; cards[id].Toggle.Checked = router.Counters[id].Enabled; busy = false;
             SyncMaster(); hint.Text = "接管失效：请先暂停下载，全部关闭后再开启"; return;
@@ -398,7 +398,7 @@ internal sealed partial class DownloadForm : Form
             if (closing) return;
             router?.Enable(id, on); PaintSwitch(id, on);
             hint.Text = on ? id == "global" ? "其他网站已开启 IPv6 优先" : "已开启仅 IPv6 内容连接，请重新开始下载"
-                : "该服务已关闭接管，新连接使用原连接方式";
+                : "该服务已关闭 IPv6 限制，新连接恢复 IPv4／原代理";
         }
         catch (Exception ex)
         {
@@ -451,7 +451,7 @@ internal sealed partial class DownloadForm : Form
             proxyUnknownUploaded = Interlocked.Read(ref p.Value.UploadProxy),
             ipv4UploadRateBps = p.Value.UploadRate4, ipv6UploadRateBps = p.Value.UploadRate6,
             proxyUnknownUploadRateBps = p.Value.UploadRateProxy,
-            failures = Interlocked.Read(ref p.Value.Failures), state = p.Value.State
+            failures = Interlocked.Read(ref p.Value.Failures), state = p.Value.State, lastFailure = p.Value.LastFailure
         }).ToArray(), servers = router?.ServerReport()
     };
     void WriteReport(string path) => File.WriteAllText(path, JsonSerializer.Serialize(Report(), new JsonSerializerOptions { WriteIndented = true }));

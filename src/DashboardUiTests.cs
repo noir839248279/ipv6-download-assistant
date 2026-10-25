@@ -98,9 +98,16 @@ internal sealed partial class DownloadForm
             "Reset immediately clears ring, speeds, upload/download totals, and histories");
         Check(cards.Values.All(c => c.Bytes.All(b => b == 0)), "Reset clears all six service bars");
         SimulateOwnershipLoss();
-        Check(cards.Values.All(c => c.ProtectionLost) && hint.ForeColor == DashboardTheme.Error,
-            "Ownership loss is visible on every service and in the status line");
+        Check(cards.Values.All(c => c.ProtectionLost == c.Toggle.Checked) && hint.ForeColor == DashboardTheme.Error,
+            "Ownership loss blocks enabled services without mislabeling disabled services");
         Snapshot("loss");
+        await Switch("quark", false);
+        Check(!router!.Counters["quark"].Enabled && !cards["quark"].ProtectionLost &&
+            cards["quark"].State == "IPv4／原代理" && router.Counters["bilibili"].Enabled,
+            "A single service can restore its original route after protection loss");
+        await Switch("quark", true);
+        Check(!router.Counters["quark"].Enabled && !cards["quark"].Toggle.Checked,
+            "Protection loss still prevents silently re-enabling a service");
         await SetAll(false); await SetAll(true);
         Check(DefaultsActive && !lossNotified, "Off then on recovers isolated relay and all switches");
         Snapshot("empty");

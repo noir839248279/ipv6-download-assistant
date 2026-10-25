@@ -315,14 +315,14 @@ internal sealed class ServiceTile : DashboardSurface
         Bytes[0] = Interlocked.Read(ref counter.V6); Bytes[1] = Interlocked.Read(ref counter.V4); Bytes[2] = Interlocked.Read(ref counter.Proxy);
         DownloadRate = counter.Rate4 + counter.Rate6 + counter.RateProxy;
         UploadRate = counter.UploadRate4 + counter.UploadRate6 + counter.UploadRateProxy;
-        ProtectionLost = lost;
+        ProtectionLost = lost && counter.Enabled;
         Server = Id == "global" ? "公共双栈 CDN" : server;
-        State = lost ? Id == "global" ? "尝试原连接方式" : "接管失效 · 已阻断"
-            : !counter.Enabled ? "未接管"
+        State = !counter.Enabled ? "IPv4／原代理"
+            : lost ? Id == "global" ? "尝试原连接方式" : "接管失效 · 已阻断"
             : counter.RateProxy > 1024 && counter.RateProxy >= Math.Max(counter.Rate4, counter.Rate6) ? "正在使用原代理"
             : counter.Rate4 + counter.Rate6 > 1024 ? counter.Rate6 >= counter.Rate4 ? "下载中 · IPv6" : "下载中 · IPv4"
             : counter.UploadRate4 + counter.UploadRate6 + counter.UploadRateProxy > 1024 ? "上传中"
-            : counter.State.Contains("失败") || counter.State.Contains("失效") ? counter.State
+            : counter.State.Contains("失败") || counter.State.Contains("失效") || counter.State.Contains("未回退") ? counter.State
             : "等待连接";
         AccessibleDescription = $"{State}，下载 {TrafficStore.Bytes(DownloadRate)}/s，IPv6 占比 {Percent:F1}%，服务器 {Server}";
         Invalidate();

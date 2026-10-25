@@ -11,6 +11,11 @@ using Microsoft.Extensions.Logging;
 
 namespace IPv6Lens;
 internal sealed record DownloadSite(string Id,string Name,string[] Domains);
+internal sealed record DownloadFailure(DateTime TimeUtc,string Stage,string Error,string? Reason,string? SocketError,string? Host);
+internal sealed class IPv6RouteException(string reason,Exception? inner=null) : IOException("IPv6 route unavailable",inner)
+{
+    internal string Reason {get;}=reason;
+}
 internal sealed class DownloadCounter
 {
     public long V4,V6,Proxy,Last4,Last6,LastProxy;public double Rate4,Rate6,RateProxy;
@@ -18,10 +23,18 @@ internal sealed class DownloadCounter
     public volatile string State="尚未接管下载",Server="";
     public volatile bool Enabled;
     public long Failures;
+    public volatile DownloadFailure? LastFailure;
     internal string ShareText {get{long a=Interlocked.Read(ref V4),b=Interlocked.Read(ref V6),u=Interlocked.Read(ref Proxy);double total=(double)a+b+u;return total==0?"暂无流量":(u>0?"已确认 IPv6 ":"IPv6 ")+(100d*b/total).ToString("F1",System.Globalization.CultureInfo.InvariantCulture)+"%";}}
 }
 internal sealed class DownloadRouter : IAsyncDisposable
 {
+    sealed class RelaySession(string site,TcpClient client)
+    {
+        internal readonly string Site=site;
+        internal readonly TcpClient Client=client;
+        internal volatile bool IntentionalClose;
+        internal void Close(){IntentionalClose=true;Client.Dispose();}
+    }
     public static readonly DownloadSite[] Sites={
         new("global","其他网站",Array.Empty<string>()),
         new("quark","夸克网盘",new[]{"quark.cn","quarkdrive.com","clouddrive.cn"}),
@@ -31,7 +44,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         new("epic","Epic Games",new[]{"download.epicgames.com","download2.epicgames.com","download3.epicgames.com","download4.epicgames.com","epicgamescdn.com","epicgames-download1.akamaized.net"})};
     public readonly Dictionary<string,DownloadCounter> Counters=Sites.ToDictionary(x=>x.Id,_=>new DownloadCounter());
     readonly RedirectSettings settings=new();readonly CancellationTokenSource stop=new();
-    readonly ConcurrentDictionary<int,(string Site,TcpClient Client)> sessions=new();
+    readonly ConcurrentDictionary<int,RelaySession> sessions=new();
     readonly ConcurrentDictionary<string,(DateTime Time,IPAddress[] Addresses)> dns=new();
     readonly ConcurrentDictionary<string,DateTime> ordinaryTls=new();
     readonly SemaphoreSlim limit=new(128);
@@ -53,7 +66,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     // Optional narrow experiment: only this content hostname may reach an IPv6 origin.
     internal string? ContentTestHost;
     internal bool ContentTestStopped;
-    internal void StopContentTest(){ContentTestStopped=true;foreach(var s in sessions.Values)s.Client.Dispose();}
+    internal void StopContentTest(){ContentTestStopped=true;foreach(var s in sessions.Values)s.Close();}
     internal static bool QuarkDownloadHost(string host)=>host.EndsWith(".quark.cn",StringComparison.OrdinalIgnoreCase)&&host.StartsWith("dl-",StringComparison.OrdinalIgnoreCase);
     public bool ProtectionLost {get;private set;}
     public string? ProtectionLossReason {get;private set;}
@@ -70,8 +83,8 @@ internal sealed class DownloadRouter : IAsyncDisposable
         if(Counters.Values.Any(c=>c.Enabled)&&!owned){
             ProtectionLost=true;
             ProtectionLossReason??="system_proxy_ownership_lost";ProtectionLostAtUtc=DateTime.UtcNow;
-            foreach(var s in sessions.Values)if(!ProductionPolicies||s.Site!="global")s.Client.Dispose();
-            foreach(var r in Counters.Values)r.State="代理设置失效：未受保护，请暂停下载";
+            foreach(var s in sessions.Values)if(!ProductionPolicies||(s.Site!="global"&&Counters[s.Site].Enabled))s.Close();
+            foreach(var r in Counters.Values)r.State=r.Enabled?"代理设置失效：未受保护，请暂停下载":"已关闭，允许 IPv4／原代理";
             return false;
         }
         return true;
@@ -82,7 +95,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     internal object[] ServerReport()=>servers.Select(p=>new{host=p.Key,site=serverSites.GetValueOrDefault(p.Key,"global"),ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy)}).Where(x=>x.site!="global"&&!IPAddress.TryParse(x.host,out _)).OrderByDescending(x=>x.ipv4+x.ipv6+x.proxyUnknown).Take(100).Cast<object>().ToArray();
     internal string MainServer(string site)=>servers.Where(p=>serverSites.GetValueOrDefault(p.Key)==site).OrderByDescending(p=>Interlocked.Read(ref p.Value.V4)+Interlocked.Read(ref p.Value.V6)+Interlocked.Read(ref p.Value.Proxy)).Select(p=>p.Key).FirstOrDefault()??"尚无内容连接";
     internal void MarkCaptureLost(){if(!ProtectionLost)ProtectionLossReason="network_core_exited";OwnershipProbe=()=>false;CheckOwnership();}
-    bool CanServe(string site)=>CheckOwnership()||(ProductionPolicies&&site=="global"&&ContentTestHost==null);
+    bool CanServe(string site)=>CheckOwnership()||(ProductionPolicies&&ContentTestHost==null&&(site=="global"||!Counters[site].Enabled));
     public async Task Start(bool system=true){
         TestMode=!system;
         if(system){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;}
@@ -95,15 +108,15 @@ internal sealed class DownloadRouter : IAsyncDisposable
         await web.StartAsync();PacUrl=web.Urls.Single()+path;
     }
     public void Enable(string id,bool on){
-        if(ProtectionLost)throw new InvalidOperationException("代理已失效。请先暂停下载，全部关闭后重新开启。");
+        if(ProtectionLost&&on)throw new InvalidOperationException("代理已失效。请先暂停下载，全部关闭后重新开启。");
         var row=Counters[id];row.Enabled=on;
         try{if(!TestMode){if(Counters.Values.Any(c=>c.Enabled)){
-            if(settings.Owned==null){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;_ = Pac();}
-            settings.Apply(PacUrl);
+            if(settings.Owned==null&&!ProtectionLost){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;_ = Pac();}
+            if(!ProtectionLost)settings.Apply(PacUrl);
         }else settings.Dispose();}}
         catch{row.Enabled=false;throw;}
         row.State=on?(ProductionPolicies&&id=="global"?"IPv6 优先；失败允许原路径":"仅 IPv6；等待内容连接"):"已关闭，允许 IPv4／原代理";
-        foreach(var pair in sessions.Where(p=>p.Value.Site==id))pair.Value.Client.Dispose();
+        foreach(var pair in sessions.Where(p=>p.Value.Site==id))pair.Value.Close();
     }
     public void EnableAll(){foreach(var site in Sites)Enable(site.Id,true);}
     int StartNative(string site){var l=new TcpListener(IPAddress.Loopback,0);l.Start();nativeListeners.Add(l);acceptLoops.Add(Task.Run(()=>Accept(l,site)));return ((IPEndPoint)l.LocalEndpoint).Port;}
@@ -136,13 +149,16 @@ internal sealed class DownloadRouter : IAsyncDisposable
     }
     static async Task<byte[]> Header(Stream stream,CancellationToken ct){using var bytes=new MemoryStream();byte[] one=new byte[1];int end=0;while(bytes.Length<32768){if(await stream.ReadAsync(one,ct)==0)throw new IOException();bytes.WriteByte(one[0]);end=(end<<8)|one[0];if(end==0x0d0a0d0a)return bytes.ToArray();}throw new IOException("Header too large");}
     async Task<(TcpClient Client,bool Proxy)> Connect(string host,int port,bool preferV6,DownloadCounter row,string scheme,CancellationToken ct,bool allowFallback=false){
-        IPAddress[] addresses;
+        IPAddress[] addresses=Array.Empty<IPAddress>();bool dnsFailed=false;
+        // A disabled production category must not depend on the content AAAA service.
+        if(preferV6||!ProductionPolicies){
         if(!dns.TryGetValue(host,out var cache)||DateTime.UtcNow-cache.Time>TimeSpan.FromSeconds(ProductionPolicies?30:120)){
             try{addresses=await Resolve(host).WaitAsync(TimeSpan.FromSeconds(5),ct);if(dns.Count<2000)dns[host]=(DateTime.UtcNow,addresses);}
-            catch(Exception ex)when(ex is SocketException or TimeoutException or HttpRequestException or TaskCanceledException){addresses=Array.Empty<IPAddress>();}
+            catch(Exception ex)when(ex is SocketException or TimeoutException or HttpRequestException or TaskCanceledException){ct.ThrowIfCancellationRequested();dnsFailed=true;}
         }else addresses=cache.Addresses;
+        }
         if(port==Port&&addresses.Any(IPAddress.IsLoopback))throw new IOException("不能转发到自身");
-        if(preferV6){foreach(var ip in addresses.Where(a=>a.AddressFamily==AddressFamily.InterNetworkV6&&(TestMode||TrafficStore.Scope(a)=="公网")).Take(3)){var client=new TcpClient(ip.AddressFamily);try{using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(2500);await client.ConnectAsync(ip,port,timeout.Token);
+        if(preferV6){Exception? lastError=null;foreach(var ip in addresses.Where(a=>a.AddressFamily==AddressFamily.InterNetworkV6&&(TestMode||TrafficStore.Scope(a)=="公网")).Take(3)){var client=new TcpClient(ip.AddressFamily);try{using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(2500);await client.ConnectAsync(ip,port,timeout.Token);
                 // Ordinary sites may fall back before handing an opaque TLS tunnel to the browser.
                 // This separate, certificate-validated handshake sends no user headers or URLs.
                 string tlsKey=host+"|"+ip;
@@ -151,12 +167,13 @@ internal sealed class DownloadRouter : IAsyncDisposable
                     client.Dispose();client=new TcpClient(ip.AddressFamily);await client.ConnectAsync(ip,port,timeout.Token);
                     if(ordinaryTls.Count<2000)ordinaryTls[tlsKey+"|"+port]=DateTime.UtcNow;
                 }
-                row.State="正在使用 IPv6";row.Server=host;return(client,false);}catch{client.Dispose();}}
-            if(!allowFallback)throw new IOException("IPv6 不可达，已拒绝回落 IPv4／原代理");}
+                row.State="正在使用 IPv6";row.Server=host;return(client,false);}catch(Exception ex){client.Dispose();ct.ThrowIfCancellationRequested();lastError=ex;}}
+            if(!allowFallback){if(addresses.Length>0)dns.TryRemove(host,out _);throw new IPv6RouteException(dnsFailed?"dns_failed":lastError==null?"no_aaaa":"ipv6_connect_failed",lastError);}}
         string proxy=ProxyFor(scheme);
         if(proxy!="DIRECT"){
             var target=new Uri("http://"+proxy[6..]);var c=new TcpClient();try{await c.ConnectAsync(target.Host,target.Port,ct);var stream=c.GetStream();await stream.WriteAsync(Encoding.ASCII.GetBytes($"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"),ct);var reply=Encoding.ASCII.GetString(await Header(stream,ct));if(!reply.Split('\r')[0].Contains(" 200 "))throw new IOException("原代理连接失败");row.State=preferV6?"IPv6 不可达，已回退原代理（出口协议未知）":"原代理路径（出口协议未知）";row.Server=host;return(c,true);}catch{c.Dispose();throw;}}
         if(ProductionPolicies)addresses=await OriginalResolve(host).WaitAsync(TimeSpan.FromSeconds(5),ct);
+        if(port==Port&&addresses.Any(IPAddress.IsLoopback))throw new IOException("不能转发到自身");
         foreach(var ip in addresses.OrderBy(a=>a.AddressFamily==AddressFamily.InterNetwork?0:1).Take(6)){var c=new TcpClient(ip.AddressFamily);try{using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(2500);await c.ConnectAsync(ip,port,timeout.Token);row.State=ip.AddressFamily==AddressFamily.InterNetworkV6?"正在使用 IPv6":"IPv6 不可用，实际使用 IPv4";row.Server=host;return(c,false);}catch{c.Dispose();}}
         throw new IOException("IPv6 和原连接均不可达");
     }
@@ -168,8 +185,8 @@ internal sealed class DownloadRouter : IAsyncDisposable
         string? processSite=ProductionPolicies&&forcedSite==null?Processes.ProxyClientSite(client):null;
         if(processSite!=null)Interlocked.Increment(ref processAttributed);
         string host=url.IdnHost;var site=forcedSite??processSite??(ProductionPolicies?ContentSite(host):Classify(host))??"global";
-        var row=Counters[site];int id=Interlocked.Increment(ref connectionId);sessions[id]=(site,client);
-        bool responseStarted=false;
+        var row=Counters[site];int id=Interlocked.Increment(ref connectionId);var session=new RelaySession(site,client);sessions[id]=session;
+        bool responseStarted=false;string stage="connect";
         try{
             if(!CanServe(site))throw new IOException("代理设置失效");
             if(ContentTestHost!=null&&(ContentTestStopped||!host.Equals(ContentTestHost,StringComparison.OrdinalIgnoreCase)))throw new IOException("测试已停止或下载域名未验证，已拒绝连接");
@@ -186,17 +203,41 @@ internal sealed class DownloadRouter : IAsyncDisposable
             }
             using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
             DownloadCounter? server=null;if(site!="global"&&servers.Count<2000){server=servers.GetOrAdd(host,_=>new());serverSites[host]=site;}
-            var up=Pump(input,output,row,v6,connected.Proxy,lifetime.Token,server,true);var down=Pump(output,input,row,v6,connected.Proxy,lifetime.Token,server);
+            stage="transfer";
             responseStarted=true;
-            await Task.WhenAny(up,down);lifetime.Cancel();try{await Task.WhenAll(up,down);}catch{}
-        }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException or TimeoutException or ObjectDisposedException or HttpRequestException or System.Text.Json.JsonException){Interlocked.Increment(ref row.Failures);row.State=ProtectionLost?"代理设置失效：未受保护，请暂停下载":row.Enabled&&site!="global"?"IPv6 请求未完成；没有回落 IPv4":"连接失败："+ex.GetType().Name;if(!responseStarted)try{using var replyTimeout=new CancellationTokenSource(1000);await input.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"u8.ToArray(),replyTimeout.Token);}catch{}}
+            await Relay(input,output,client.Client,upstream.Client,row,v6,connected.Proxy,lifetime.Token,server);
+        }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException or TimeoutException or ObjectDisposedException or HttpRequestException or System.Text.Json.JsonException){
+            if(session.IntentionalClose||stop.IsCancellationRequested)return;
+            Interlocked.Increment(ref row.Failures);
+            Exception? cause=ex;while(cause!=null&&cause is not SocketException)cause=cause.InnerException;
+            string? reason=(ex as IPv6RouteException)?.Reason;
+            row.LastFailure=new(DateTime.UtcNow,stage,ex.GetType().Name,reason,(cause as SocketException)?.SocketErrorCode.ToString(),site=="global"?null:host);
+            row.State=ProtectionLost&&row.Enabled?"代理设置失效：未受保护，请暂停下载":row.Enabled&&site!="global"?reason switch{"no_aaaa"=>"无 IPv6 地址；未回退 IPv4","dns_failed"=>"IPv6 解析失败；未回退 IPv4","ipv6_connect_failed"=>"IPv6 连接失败；未回退 IPv4",_=>"IPv6 传输失败；未回退 IPv4"}:"连接失败："+ex.GetType().Name;
+            if(!responseStarted)try{using var replyTimeout=new CancellationTokenSource(1000);await input.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"u8.ToArray(),replyTimeout.Token);}catch{}
+        }
         finally{sessions.TryRemove(id,out _);}
+    }
+    internal static async Task Relay(Stream input,Stream output,Socket client,Socket upstream,DownloadCounter row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null){
+        using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var up=Pump(input,output,row,v6,proxy,lifetime.Token,server,true);var down=Pump(output,input,row,v6,proxy,lifetime.Token,server);
+        try{
+            var first=await Task.WhenAny(up,down);
+            if(up.IsFaulted)await up;
+            if(down.IsFaulted)await down;
+            await first; // Propagate the first real read/write failure before cleanup.
+            // EOF closes only the destination's send half; the response may still be pending.
+            (first==up?upstream:client).Shutdown(SocketShutdown.Send);
+            await (first==up?down:up).WaitAsync(TimeSpan.FromSeconds(30),ct);
+        }finally{
+            lifetime.Cancel();
+            try{await Task.WhenAll(up,down);}catch{} // Observe sibling cancellation, not the primary failure.
+        }
     }
     static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,bool upload=false){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(upload)CountUpload(c,n,v6,proxy);else if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);}}
     static void CountUpload(DownloadCounter c,int n,bool v6,bool proxy){if(proxy)Interlocked.Add(ref c.UploadProxy,n);else if(v6)Interlocked.Add(ref c.Upload6,n);else Interlocked.Add(ref c.Upload4,n);}
-    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;long x=Interlocked.Read(ref row.Upload4),y=Interlocked.Read(ref row.Upload6),z=Interlocked.Read(ref row.UploadProxy);row.UploadRate4=Math.Max(0,x-row.LastUpload4)/seconds;row.UploadRate6=Math.Max(0,y-row.LastUpload6)/seconds;row.UploadRateProxy=Math.Max(0,z-row.LastUploadProxy)/seconds;row.LastUpload4=x;row.LastUpload6=y;row.LastUploadProxy=z;if(ProtectionLost)row.State="代理设置失效：未受保护，请暂停下载";}}
+    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;long x=Interlocked.Read(ref row.Upload4),y=Interlocked.Read(ref row.Upload6),z=Interlocked.Read(ref row.UploadProxy);row.UploadRate4=Math.Max(0,x-row.LastUpload4)/seconds;row.UploadRate6=Math.Max(0,y-row.LastUpload6)/seconds;row.UploadRateProxy=Math.Max(0,z-row.LastUploadProxy)/seconds;row.LastUpload4=x;row.LastUpload6=y;row.LastUploadProxy=z;if(ProtectionLost&&row.Enabled)row.State="代理设置失效：未受保护，请暂停下载";}}
     public void Reset(){foreach(var r in Counters.Values.Concat(servers.Values)){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=r.LastProxy=0;r.Rate4=r.Rate6=r.RateProxy=0;Interlocked.Exchange(ref r.Upload4,0);Interlocked.Exchange(ref r.Upload6,0);Interlocked.Exchange(ref r.UploadProxy,0);r.LastUpload4=r.LastUpload6=r.LastUploadProxy=0;r.UploadRate4=r.UploadRate6=r.UploadRateProxy=0;}}
-    public async ValueTask DisposeAsync(){settings.Dispose();stop.Cancel();listener?.Stop();foreach(var l in nativeListeners)l.Stop();foreach(var s in sessions.Values)s.Client.Dispose();await Task.WhenAll(acceptLoops);if(web!=null){await web.StopAsync();await web.DisposeAsync();}contentDns?.Dispose();stop.Dispose();}
+    public async ValueTask DisposeAsync(){settings.Dispose();stop.Cancel();listener?.Stop();foreach(var l in nativeListeners)l.Stop();foreach(var s in sessions.Values)s.Close();await Task.WhenAll(acceptLoops);if(web!=null){await web.StopAsync();await web.DisposeAsync();}contentDns?.Dispose();stop.Dispose();}
 }
 
 
