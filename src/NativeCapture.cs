@@ -22,8 +22,10 @@ internal sealed class NativeCapture : IAsyncDisposable
         var config=new Dictionary<string,object>{
         ["mode"]="rule",["ipv6"]=true,["log-level"]="silent",["find-process-mode"]="always",
         ["external-controller"]="127.0.0.1:"+control,["secret"]=secret,["allow-lan"]=false,
-        ["tun"]=new Dictionary<string,object>{["enable"]=tun,["device"]="IPv6Lens-TUN",["stack"]="gvisor",["auto-route"]=true,["auto-detect-interface"]=true,["strict-route"]=false,["dns-hijack"]=new[]{"any:53","tcp://any:53"},["mtu"]=1500},
-        ["dns"]=new Dictionary<string,object>{["enable"]=true,["ipv6"]=true,["enhanced-mode"]="redir-host",["default-nameserver"]=new[]{"223.5.5.5","119.29.29.29"},["nameserver"]=new[]{"https://223.5.5.5/dns-query"}},
+        ["tun"]=new Dictionary<string,object>{["enable"]=tun,["device"]="IPv6Lens-TUN",["stack"]="gvisor",["auto-route"]=true,["auto-detect-interface"]=true,["strict-route"]=false,["dns-hijack"]=new[]{"any:53","tcp://any:53"},["mtu"]=1500,
+            ["route-exclude-address"]=new[]{"10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","169.254.0.0/16","fc00::/7","fe80::/10"}},
+        // Retain campus/private DNS answers instead of replacing them with public DoH.
+        ["dns"]=new Dictionary<string,object>{["enable"]=true,["ipv6"]=true,["enhanced-mode"]="redir-host",["nameserver"]=new[]{"system://"},["direct-nameserver"]=new[]{"system://"}},
         ["sniffer"]=new Dictionary<string,object>{["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=true,["sniff"]=new{HTTP=new{ports=new[]{80,8080}},TLS=new{ports=new[]{443}},QUIC=new{ports=new[]{443}}}},
         ["proxies"]=new object[]{new{name="BrowserRelay",type="http",server="127.0.0.1",port=router.Port},new{name="SteamRelay",type="http",server="127.0.0.1",port=router.SteamPort},new{name="EpicRelay",type="http",server="127.0.0.1",port=router.EpicPort},
             new Dictionary<string,object>{["name"]="IPv6Origin",["type"]="direct",["ip-version"]="ipv6"}},

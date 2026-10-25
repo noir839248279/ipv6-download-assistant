@@ -210,19 +210,28 @@ internal sealed class TrafficShare : DashboardSurface
     }
     protected override void PaintContent(Graphics g, float w, float h)
     {
-        float diameter = Math.Min(126, h - 36);
+        float diameter = Math.Min(126, Math.Min(h - 36, w - 48));
+        if (diameter <= 0) return;
         var circle = new RectangleF(24, (h - diameter) / 2, diameter, diameter);
         using (var track = new Pen(DashboardTheme.Raised, 10)) g.DrawEllipse(track, circle);
         double total = V6 + (double)V4 + Unknown;
         long[] bytes = { V6, V4, Unknown };
         float angle = -90;
+        using var transform = g.Transform;
+        float pixelScale = Math.Max(Math.Abs(transform.Elements[0]), Math.Abs(transform.Elements[3]));
         if (total > 0)
             for (int i = 0; i < 3; i++)
             {
                 float sweep = (float)(bytes[i] / total * 360);
                 if (sweep <= 0) continue;
-                using var pen = new Pen(DashboardTheme.Protocol(i), 10);
-                g.DrawArc(pen, circle, angle, sweep);
+                // GDI+ can reject tiny arcs near quadrant boundaries. Keep their
+                // numeric share and angle, but do not draw subpixel geometry.
+                if (MathF.PI * diameter * pixelScale * sweep / 360 >= 1)
+                {
+                    using var pen = new Pen(DashboardTheme.Protocol(i), 10);
+                    if (sweep >= 360) g.DrawEllipse(pen, circle);
+                    else g.DrawArc(pen, circle, angle, sweep);
+                }
                 angle += sweep;
             }
         TextAt(g, Percent.ToString("F1") + "%", new(circle.X, circle.Y + diameter / 2 - 25, diameter, 33),

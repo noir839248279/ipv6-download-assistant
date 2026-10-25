@@ -21,6 +21,16 @@ internal sealed class ContentDns : IDisposable
         bool answered=false;
         var addresses=new List<IPAddress>();
         try{
+            // Give the network's own resolver a short head start for CDN locality.
+            // Public DNS still supplies answers if local resolution is empty or slow.
+            if(!allSources&&pending.Count>0){
+                var preferred=pending[0];
+                await Task.WhenAny(preferred,Task.Delay(350,deadline.Token));
+                if(preferred.IsCompletedSuccessfully){
+                    var result=await preferred;
+                    if(result.Rows.Length>0)return result.Rows.Select(n=>n.Address).Distinct().ToArray();
+                }
+            }
             while(pending.Count>0){
                 var task=await Task.WhenAny(pending);pending.Remove(task);
                 var result=await task;answered|=result.Answered;

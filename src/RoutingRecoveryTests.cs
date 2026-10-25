@@ -38,6 +38,12 @@ internal static class RoutingRecoveryTests
         dns.Sources = new Func<string, CancellationToken, Task<NodeAddress[]>>[] { Empty, Valid };
         check((await dns.Resolve("fixture.invalid")).SequenceEqual(new[] { address }),
             "An empty source cannot hide another source's IPv6 answer");
+        dns.Sources = new Func<string, CancellationToken, Task<NodeAddress[]>>[] {
+            async (_, ct) => { await Task.Delay(20, ct); return await Valid("", ct); },
+            (_, _) => Task.FromResult(new[] { new NodeAddress(IPAddress.Parse("2001:db8::30"), DateTime.UtcNow.AddSeconds(60), "public") })
+        };
+        check((await dns.Resolve("fixture.invalid")).SequenceEqual(new[] { address }),
+            "A prompt local DNS answer wins over an earlier public answer for CDN locality");
         dns.Sources = new Func<string, CancellationToken, Task<NodeAddress[]>>[] { Valid,
             (_, _) => Task.FromResult(new[] { new NodeAddress(IPAddress.Parse("2001:db8::20"), DateTime.UtcNow, "TTL-zero") }) };
         check((await dns.ResolveAll("fixture.invalid")).Length == 2,
@@ -141,6 +147,14 @@ internal static class RoutingRecoveryTests
         await using var core = new NativeCapture();
         await core.Start(router, false, config =>
         {
+            var configuredDns = (Dictionary<string, object>)config["dns"];
+            check(((string[])configuredDns["nameserver"]).SequenceEqual(new[] { "system://" }) &&
+                ((string[])configuredDns["direct-nameserver"]).SequenceEqual(new[] { "system://" }),
+                "Normal and direct DNS retain the network's system resolver");
+            var tun = (Dictionary<string, object>)config["tun"];
+            check(((string[])tun["route-exclude-address"]).Contains("10.0.0.0/8") &&
+                ((string[])tun["route-exclude-address"]).Contains("fc00::/7"),
+                "Campus private IPv4 and local IPv6 routes are excluded from TUN capture");
             config["mixed-port"] = mixedPort;
             config["log-level"] = "debug";
             config["dns"] = new Dictionary<string, object> {
@@ -162,6 +176,10 @@ internal static class RoutingRecoveryTests
             JsonSerializer.Serialize(router.Counters.Select(p=>new {site=p.Key,p.Value.State,p.Value.LastFailure})), ex); }
         check(first == "v6",
             "Real isolated Mihomo routes enabled Quark into the strict IPv6 relay");
+        await serving;
+        serving = Reply(v4, "api", timeout.Token);
+        check(await http.GetStringAsync("http://drive-social-api.quark.cn:" + port4 + "/") == "api",
+            "Quark control API uses its original path while Quark content remains enabled");
         await serving;
         router.Enable("quark", false);
         await core.SyncServices(router, new[] { "quark" });
@@ -244,6 +262,9 @@ internal static class RoutingRecoveryTests
             Case("http://cdn.quark.cn/", "PROXY 127.0.0.1:18080"),
             Case("https://cdn.bilivideo.com/", relay),
             Case("https://pan.quark.cn/", "PROXY 127.0.0.1:18443"),
+            Case("https://browser-agent-api.quark.cn/", "PROXY 127.0.0.1:18443"),
+            Case("https://sync-control.quark.cn/", "PROXY 127.0.0.1:18443"),
+            Case("https://drive-social-api.quark.cn/", "PROXY 127.0.0.1:18443"),
             Case("https://ordinary.example/", relay),
             Case("https://192.168.1.1/", "DIRECT") } });
         router.Enable("quark", true); router.Enable("global", false);

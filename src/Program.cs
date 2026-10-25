@@ -44,6 +44,7 @@ internal static class Program
         if(args.Length==2&&args[0]=="--split-live-test"){SplitRoutingTests.Live(args[1]);return;}
         if(args.Length==2&&args[0]=="--split-owner-test"){SplitRoutingTests.Owner(args[1]);return;}
         ApplicationConfiguration.Initialize();
+        if(args.Length==2&&args[0]=="--traffic-share-test"){TrafficShareTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--node-ui-test"){NodeForm.UiTest(args[1]);return;}
         bool dashboardTest=args.Length==2&&args[0]=="--dashboard-test";
         bool uiSmoke=dashboardTest||args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";

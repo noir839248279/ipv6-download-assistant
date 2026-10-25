@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.2.1";
+    const string Version = "3.2.2";
     DownloadRouter? router;
     NativeCapture? native;
     readonly SplitRouting clashBinding = new();
