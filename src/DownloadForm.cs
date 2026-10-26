@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.3.0";
+    const string Version = "3.3.1";
     DownloadRouter? router;
     NativeCapture? native;
     readonly Dictionary<string,DownloadCounter> counters = DownloadRouter.Sites.ToDictionary(s=>s.Id,_=>new DownloadCounter { Mode=ServiceMode.Mixed });
@@ -38,7 +38,8 @@ internal sealed partial class DownloadForm : Form
     float ScaleFactor => DeviceDpi / 96f;
     int Px(float n) => (int)Math.Round(n * ScaleFactor);
     internal bool DefaultsActive => router != null && (testMode || native?.Active == true) &&
-        !router.ProtectionLost && cards.Values.All(c => c.Toggle.Checked) && router.Counters.Values.All(c => c.Enabled);
+        !router.ProtectionLost && cards.Where(p=>p.Key!="global").All(p=>p.Value.Toggle.Checked) &&
+        router.Counters.Where(p=>p.Key!="global").All(p=>p.Value.Enabled);
     internal bool SplitActive => split.Toggle.Checked;
 
     public DownloadForm(bool testMode = false)
@@ -78,7 +79,15 @@ internal sealed partial class DownloadForm : Form
             var tile = new ServiceTile(id);
             cards[id] = tile; canvas.Controls.Add(tile);
             tooltips.SetToolTip(tile.Toggle, "仅切换此服务；关闭后恢复原路径");
-            tooltips.SetToolTip(tile.ModeSelect, "混合保护：明确辅助域名可走原路径，每服务每次启动最多 2 MiB；下载/视频/未知域名不回退 IPv4。严格模式全部仅 IPv6。");
+            tooltips.SetToolTip(tile.ModeSelect, "混合保护：明确辅助域名可走原路径，初始 2 MiB，补充须确认；下载/视频/未知域名不回退 IPv4。严格模式全部仅 IPv6。");
+            tile.Allowance.LinkClicked += (_,_) => {
+                if(busy||closing||counters[id].Mode!=ServiceMode.Mixed)return;
+                if(MessageBox.Show(this,"仅为"+tile.AccessibleName+"增加 2 MiB 辅助原路径额度（收发合计）。可能使用 IPv4 或原代理；下载和视频仍只允许 IPv6。是否补充？",
+                    "补充辅助额度",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes)return;
+                counters[id].Auxiliary.Grant();
+                hint.Text=tile.AccessibleName+"辅助额度已补充 2 MiB；请重试刚才的操作，大文件仍仅 IPv6";
+                RefreshCards(false);
+            };
             tile.Toggle.CheckedChanged += async (_, _) =>
             {
                 if (busy || closing) return;
@@ -228,6 +237,7 @@ internal sealed partial class DownloadForm : Form
         }
         version.ForeColor = DashboardTheme.V6;
         foreach (var button in actions) button.RefreshTheme();
+        foreach (var tile in cards.Values) tile.RefreshAllowanceTheme();
         if (router?.ProtectionLost == true) hint.ForeColor = DashboardTheme.Error;
         canvas.Invalidate(true);
     }
@@ -315,7 +325,7 @@ internal sealed partial class DownloadForm : Form
     async Task Initialize()
     {
         if(!testMode){passive=new PassiveTraffic();passive.Start();}
-        await SetAll(true);
+        await SetAll(true,false);
         if (testMode)
         {
             network.Text = "界面测试 · 不进行公网探测";
@@ -418,7 +428,7 @@ internal sealed partial class DownloadForm : Form
         }
         finally { clashBusy = false; SetControlsEnabled(); }
     }
-    async Task SetAll(bool on)
+    async Task SetAll(bool on,bool includeOther=true)
     {
         if (busy || closing) return;
         if (on && router?.ProtectionLost == true) { hint.Text = "请先暂停下载，全部关闭后再开启"; return; }
@@ -427,16 +437,16 @@ internal sealed partial class DownloadForm : Form
         busy = true; SetControlsEnabled();
         try
         {
-            if (router == null && on) await StartRouting();
+            if (router == null && on) await StartRouting(includeOther:includeOther);
             if (closing) return;
             if (router != null)
             {
-                if (on) { router.EnableAll(); await SyncServices(cards.Keys); }
+                if (on) { foreach(string id in cards.Keys)router.Enable(id,includeOther||id!="global"); await SyncServices(cards.Keys); }
                 else { SaveAutomaticReport(); await StopRouting(); lossNotified = false; }
             }
-            foreach (var id in cards.Keys) PaintSwitch(id, on);
+            foreach (var id in cards.Keys) PaintSwitch(id, on&&(includeOther||id!="global"));
             hint.ForeColor = DashboardTheme.Muted;
-            hint.Text = on ? "接管已开启；大文件不回退 IPv4。请重新开始下载或刷新视频" : "接管已关闭，新连接使用原路径；累计流量保留";
+            hint.Text = on ? includeOther?"全部接管已开启；不支持 IPv6 的普通网站也会被阻止":"五项服务已接管；普通网站保持原路径，大文件不回退 IPv4" : "接管已关闭，新连接使用原路径；累计流量保留";
         }
         catch (Exception ex)
         {
@@ -475,12 +485,12 @@ internal sealed partial class DownloadForm : Form
         }
         finally { busy = false; SetControlsEnabled(); RefreshCards(false); }
     }
-    async Task StartRouting(string? selected = null)
+    async Task StartRouting(string? selected = null,bool includeOther=true)
     {
         router = new DownloadRouter { ProductionPolicies = true };
         foreach(var pair in counters)router.Counters[pair.Key]=pair.Value;
         await router.Start(!testMode);
-        foreach (var pair in router.Counters) router.Enable(pair.Key, selected == null || pair.Key == selected);
+        foreach (var pair in router.Counters) router.Enable(pair.Key, selected == null ? includeOther||pair.Key!="global" : pair.Key == selected);
         if (!testMode) { native = new NativeCapture(); await native.Start(router); }
     }
     async Task StopRouting()
@@ -544,7 +554,8 @@ internal sealed partial class DownloadForm : Form
         每个服务独立开启/关闭，并可选择混合保护或严格 IPv6。默认混合保护：只有列明的登录、列表、取链接等辅助域名可走原路径；下载、视频、未知域名必须走 IPv6，失败不会偷偷回退 IPv4。严格模式连辅助请求也必须走 IPv6。没有 IPv6 的资源会明确失败，可手动关闭该服务恢复原路径。
 
         混合保护额度
-        每服务每次启动最多 2 MiB 原路径辅助流量（收发合计，代理出口未知也扣额度）；用尽后阻止新的辅助请求。清零或切换开关不会恢复额度。这是中继字节保护，不是校园网计费保证；HTTPS 无法按文件大小准确分流。
+        每服务初始 2 MiB 原路径辅助流量（收发合计，代理出口未知也扣额度）；用尽会阻止辅助请求，可能导致登录/取下载链接失败。可点击卡片额度旁“补充”，确认后增加 2 MiB，不会自动增加或放开内容 IPv4。清零或切换开关不会恢复额度。这是中继字节保护，不是校园网计费保证；HTTPS 无法按文件大小准确分流。
+        默认仅开启五项内容服务，“其他网站”保持关闭、恢复原网络。主动全部开启会连普通网站也限制 IPv6。
 
         流量
         各服务显示 IPv4 / IPv6 / 未知的累计下载和当前下载速度，顶部另有上传统计。关闭开关仍保留累计流量。关闭后的被动监测仅覆盖夸克、Steam、Epic 原生进程的公网连接，不覆盖浏览器/AList；经 TUN/代理不能确认最终出口时标记未知。不等于整机或运营商账单。
@@ -561,12 +572,13 @@ internal sealed partial class DownloadForm : Form
         schema = "ipv6-download-assistant/3", version = Version, timeUtc = DateTime.UtcNow,
         protectionLost = router?.ProtectionLost, nativeCapture = native?.Active ?? false, network = network.Text,
         nativeExitCode = native?.ExitCode, routerHealth = router?.Health(),
-        scope = "Enabled: relay stream bytes. Mixed allows only exact auxiliary hosts with a shared per-service 2 MiB non-IPv6/original-proxy allowance per app session. All content/unknown hosts remain IPv6-only. Disabled: passive native Quark/Steam/Epic public flows only, no browser/AList coverage. TUN/proxy exit is unknown. Not campus billing.",
+        scope = "Enabled: relay stream bytes. Mixed allows only exact auxiliary hosts with an initial shared per-service 2 MiB non-IPv6/original-proxy allowance; additional 2 MiB grants require explicit user confirmation. All content/unknown hosts remain IPv6-only. Other websites default to original path. Disabled: passive native Quark/Steam/Epic public flows only, no browser/AList coverage. TUN/proxy exit is unknown. Not campus billing.",
+        recentRoutes=router?.RecentRoutes(),
         passiveStatus=passive?.Status,passiveLostEvents=passive?.Lost,
         services = counters.Select(p => new
         {
             id = p.Key, enabled = p.Value.Enabled, mode=p.Value.Mode.ToString(),
-            auxiliaryUsed= p.Value.Auxiliary.Used,auxiliaryLimit=AuxiliaryBudget.Limit,
+            auxiliaryUsed= p.Value.Auxiliary.Used,auxiliaryLimit=p.Value.Auxiliary.Capacity,
             ipv4 = Interlocked.Read(ref p.Value.V4),
             ipv6 = Interlocked.Read(ref p.Value.V6), proxyUnknown = Interlocked.Read(ref p.Value.Proxy),
             ipv4RateBps = p.Value.Rate4, ipv6RateBps = p.Value.Rate6, proxyUnknownRateBps = p.Value.RateProxy,

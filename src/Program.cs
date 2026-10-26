@@ -13,6 +13,8 @@ internal static class Program
         if(args.Length==2&&args[0]=="--native-egress-test"){NativeEgressTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--relay-policy-test"){RelayPolicyTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--mixed-policy-test"){MixedPolicyTests.Run(args[1]);return;}
+        if(args.Length==2&&args[0]=="--proxy-bypass-test"){ProxyBypassTests.Run(args[1]);return;}
+        if(args.Length==4&&args[0]=="--proxy-bypass-probe"){ProxyBypassTests.Probe(int.Parse(args[1]),int.Parse(args[2]),args[3]);return;}
         if(args.Length==2&&args[0]=="--relay-resilience-test"){RelayResilienceTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-delivery-test"){string prefix=args[1];NativeTests.Suite(prefix+".suite.json");if(Environment.ExitCode!=0)return;args=new[]{"--ui-native-test",prefix+".png"};}
         if(args.Length==2&&args[0]=="--platform-probes"){PlatformProbes.Run(args[1]);return;}

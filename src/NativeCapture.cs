@@ -66,7 +66,10 @@ internal sealed class NativeCapture : IAsyncDisposable
                     r.EndsWith(",EpicRelay",StringComparison.Ordinal)||r.Contains("PROCESS-NAME,Epic",StringComparison.Ordinal)?"epic":null;
                 return site==null?r:r[..(r.LastIndexOf(',')+1)]+ServiceGroup(site);
             }).ToList();
-        rules.InsertRange(3,DownloadRouter.AuxiliaryHosts.Select(p=>"DOMAIN,"+p.Key+","+ServiceGroup(p.Value)));
+        // Upstream proxy processes must escape before domain capture, or their
+        // auxiliary requests can re-enter BrowserRelay and the same proxy again.
+        int guardEnd=rules.IndexOf("IP-CIDR6,fe80::/10,DIRECT,no-resolve")+1;
+        rules.InsertRange(guardEnd,DownloadRouter.AuxiliaryHosts.Select(p=>"DOMAIN,"+p.Key+","+ServiceGroup(p.Value)));
         foreach(var site in DownloadRouter.Sites.Where(s=>s.Id!="global"))
             rules.AddRange(site.Domains.Select(d=>"DOMAIN-SUFFIX,"+d+","+ServiceGroup(site.Id)));
         rules.Add("MATCH,DIRECT");

@@ -22,9 +22,13 @@ internal sealed partial class DownloadForm
             canvas.DrawToBitmap(image, new Rectangle(Point.Empty, canvas.Size));
             image.Save(prefix + "." + name + ".png");
         }
-        Check(DefaultsActive && master.Checked && !master.Mixed, "Startup: six services and master enabled");
+        Check(DefaultsActive && !master.Checked && master.Mixed && !counters["global"].Enabled,
+            "Startup protects five services and leaves unrelated websites on original path");
+        Check(cards["global"].Allowance.LinkArea.Length==0,"Other websites has no misleading auxiliary allowance link");
         Check(!SplitActive, "Split routing defaults to off independently of services");
         Check(counters.Values.All(r=>r.Mode==ServiceMode.Mixed),"All service mode selectors default to protected mixed");
+        Check(router!.Pac().Contains("return url.substring(0,6)==='https:'?"),
+            "Disabled other-websites policy keeps original PAC path");
         cards["quark"].ModeSelect.SelectedIndex=1;await serviceWork;
         Check(counters["quark"].Mode==ServiceMode.Strict && counters["bilibili"].Mode==ServiceMode.Mixed,
             "Mode selection affects only its own service");
@@ -72,6 +76,9 @@ internal sealed partial class DownloadForm
         foreach (bool light in new[] { false, true })
         {
             DashboardTheme.Light = light;
+            ApplyTheme();
+            Check(cards.Values.All(c=>c.Allowance.BackColor==DashboardTheme.Panel),
+                $"Auxiliary allowance controls follow {(light?"light":"dark")} theme");
             using var image = new Bitmap(master.Width, master.Height);
             master.DrawToBitmap(image, new Rectangle(Point.Empty, master.Size));
             Color track = image.GetPixel(Px(12), master.Height / 2);

@@ -289,13 +289,14 @@ internal sealed class ServiceTile : DashboardSurface
 {
     internal readonly DashboardToggle Toggle;
     internal readonly ComboBox ModeSelect = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    internal readonly LinkLabel Allowance = new() { AutoSize=false, TextAlign=ContentAlignment.MiddleLeft };
     internal ServiceMode Mode;
     internal readonly string Id;
     readonly string title, mark;
     readonly Color brand;
     internal readonly long[] Bytes = new long[3];
     internal readonly double[] Rates = new double[3];
-    long auxiliaryUsed;
+    bool allowanceExhausted;
     internal double DownloadRate;
     internal double UploadRate;
     internal string Server = "尚未发现服务器", State = "等待连接";
@@ -318,6 +319,8 @@ internal sealed class ServiceTile : DashboardSurface
         ModeSelect.SelectedIndex = 0;
         ModeSelect.AccessibleName = title + "连接模式";
         Controls.Add(ModeSelect);
+        Allowance.AccessibleName=title+"辅助流量额度";
+        Controls.Add(Allowance);
         Controls.Add(Toggle); AccessibleName = title;
     }
     protected override void OnResize(EventArgs e)
@@ -327,6 +330,8 @@ internal sealed class ServiceTile : DashboardSurface
             (int)(46 * ScaleFactor), (int)(28 * ScaleFactor));
         ModeSelect.SetBounds((int)(20 * ScaleFactor), (int)(69 * ScaleFactor),
             (int)(126 * ScaleFactor), (int)(28 * ScaleFactor));
+        Allowance.SetBounds((int)(20 * ScaleFactor),(int)(261 * ScaleFactor),
+            Math.Max(0,Width-(int)(40*ScaleFactor)),(int)(23*ScaleFactor));
     }
     internal void Update(DownloadCounter counter, string server, bool lost)
     {
@@ -336,7 +341,13 @@ internal sealed class ServiceTile : DashboardSurface
         ProtectionLost = lost && counter.Enabled;
         Mode = counter.Mode;
         Rates[0]=counter.Rate6;Rates[1]=counter.Rate4;Rates[2]=counter.RateProxy;
-        auxiliaryUsed=counter.Auxiliary.Used;
+        long auxiliaryUsed=counter.Auxiliary.Used;
+        allowanceExhausted=auxiliaryUsed>=counter.Auxiliary.Capacity;
+        Allowance.Text=Id=="global" ? "可选 · 开启后普通网站仅 IPv6" : counter.Mode==ServiceMode.Mixed
+            ? $"辅助额度 {auxiliaryUsed/1048576d:F2} / {counter.Auxiliary.Capacity/1048576d:F0} MiB · 补充"
+            : "严格模式 · 不使用辅助 IPv4";
+        Allowance.LinkArea=Id!="global"&&counter.Mode==ServiceMode.Mixed?new(Allowance.Text.Length-2,2):new(0,0);
+        RefreshAllowanceTheme();
         Server = Id == "global" ? "公共双栈 CDN" : server;
         State = !counter.Enabled ? counter.State.Contains("监测") ? counter.State : "已关闭 · 原路径"
             : lost ? "接管失效 · 已阻断"
@@ -347,6 +358,12 @@ internal sealed class ServiceTile : DashboardSurface
             : "等待连接";
         AccessibleDescription = $"{State}，下载 {TrafficStore.Bytes(DownloadRate)}/s，IPv6 占比 {Percent:F1}%，服务器 {Server}";
         Invalidate();
+    }
+    internal void RefreshAllowanceTheme()
+    {
+        Allowance.BackColor=DashboardTheme.Panel;
+        Allowance.ForeColor=allowanceExhausted?DashboardTheme.Error:DashboardTheme.Muted;
+        Allowance.LinkColor=allowanceExhausted?DashboardTheme.Error:DashboardTheme.V6;
     }
     protected override void PaintContent(Graphics g, float w, float h)
     {
@@ -382,7 +399,6 @@ internal sealed class ServiceTile : DashboardSurface
             TextAt(g, TrafficStore.Bytes(Bytes[i]), new(x, 213, barWidth / 3 - 6, 22), 12, bold: true);
             TextAt(g, TrafficStore.Bytes(Rates[i])+"/s",new(x,237,barWidth/3-6,20),10,DashboardTheme.Muted);
         }
-        TextAt(g, Mode==ServiceMode.Mixed?$"辅助原路径额度 {auxiliaryUsed/1048576d:F2} / 2 MiB":"严格模式 · 不使用辅助 IPv4",new(20,263,w-40,20),10,auxiliaryUsed>=AuxiliaryBudget.Limit?DashboardTheme.Error:DashboardTheme.Muted);
         using var rule = new Pen(DashboardTheme.Line);
         g.DrawLine(rule, 20, h - 42, w - 20, h - 42);
         Dot(g, 23, h - 22, ProtectionLost ? DashboardTheme.Error : Toggle.Checked ? DashboardTheme.V6 : DashboardTheme.Muted, 3);

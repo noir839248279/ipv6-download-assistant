@@ -48,6 +48,12 @@ internal static class MixedPolicyTests
                 router.Resolve=_=>Task.FromResult(new[]{IPAddress.Loopback});
                 router.OriginalResolve=_=>{originalQueries++;return Task.FromResult(new[]{IPAddress.Loopback});};
                 router.EnableAll();
+                var native=(Dictionary<string,object>)NativeCapture.Config(router,0,"",false);
+                var rules=(string[])native["rules"];
+                int auxiliaryRule=Array.FindIndex(rules,r=>r=="DOMAIN,drive-pc.quark.cn,Service-quark");
+                foreach(string process in new[]{"mihomo.exe","verge-mihomo.exe","verge-mihomo-alpha.exe","clash.exe","sing-box.exe"})
+                    Check(Array.IndexOf(rules,"PROCESS-NAME,"+process+",DIRECT")<auxiliaryRule,
+                        process+": original proxy bypass precedes auxiliary domain capture");
                 using var http=new HttpClient(new HttpClientHandler{UseProxy=true,Proxy=new WebProxy("http://127.0.0.1:"+router.Port)})
                     {Timeout=TimeSpan.FromSeconds(3)};
                 async Task<bool> Ok(string host){using var r=await http.GetAsync($"http://{host}:{port}/");return r.IsSuccessStatusCode;}
@@ -75,9 +81,19 @@ internal static class MixedPolicyTests
                 Check(router.Counters["quark"].Auxiliary.Used==used,"Reset and toggles cannot refill the allowance");
                 var allowance=router.Counters["quark"].Auxiliary;
                 while(allowance.Used<AuxiliaryBudget.Limit)allowance.Reserve(65536);
+                router.Resolve=_=>Task.FromResult(new[]{IPAddress.Loopback});
                 int beforeCap=originalQueries;
-                Check(!await Ok("drive.quark.cn")&&originalQueries==beforeCap,"Exhausted allowance blocks before opening original connection");
+                Check(!await Ok("drive.quark.cn")&&originalQueries==beforeCap,"Exhausted allowance never opens an original IPv4 connection");
                 Check(router.Counters["quark"].State.Contains("额度"),"Allowance exhaustion has actionable state");
+                router.Resolve=_=>Task.FromResult(new[]{IPAddress.IPv6Loopback});
+                Check(await Ok("pan-api.quark.cn")&&originalQueries==beforeCap&&allowance.Used==AuxiliaryBudget.Limit,
+                    "Exhausted original allowance still permits IPv6 auxiliary requests without spending IPv4");
+                allowance.Grant();
+                Check(allowance.Used==AuxiliaryBudget.Limit&&allowance.Capacity==2*AuxiliaryBudget.Limit,
+                    "Explicit grant adds a bounded allowance without erasing prior usage");
+                Check(router.RecentRoutes().Any(e=>e.Event=="disabled"&&e.Site=="quark")&&
+                    router.RecentRoutes().Any(e=>e.Event=="auxiliary"&&e.Family=="IPv6"),
+                    "Bounded route history records toggles and actual peer family");
                 var concurrent=new AuxiliaryBudget();
                 long reserved=0;
                 await Task.WhenAll(Enumerable.Range(0,12).Select(_=>Task.Run(() =>

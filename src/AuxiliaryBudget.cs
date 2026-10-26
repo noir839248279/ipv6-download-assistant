@@ -4,14 +4,16 @@ namespace IPv6Lens;
 internal sealed class AuxiliaryBudget
 {
     internal const long Limit = 2 * 1024 * 1024;
-    long used;
+    long used, capacity = Limit;
     internal long Used => Interlocked.Read(ref used);
+    internal long Capacity => Interlocked.Read(ref capacity);
+    internal void Grant() => Interlocked.Add(ref capacity, Limit);
     internal int Reserve(int requested)
     {
         while (true)
         {
             long before = Used;
-            int count = (int)Math.Min(requested, Limit - before);
+            int count = (int)Math.Min(requested, Capacity - before);
             if (count <= 0) throw new AuxiliaryBudgetException();
             if (Interlocked.CompareExchange(ref used, before + count, before) == before) return count;
         }

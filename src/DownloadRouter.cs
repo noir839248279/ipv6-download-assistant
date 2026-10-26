@@ -13,7 +13,7 @@ namespace IPv6Lens;
 internal sealed record DownloadSite(string Id,string Name,string[] Domains);
 internal sealed record DownloadFailure(DateTime TimeUtc,string Stage,string Error,string? Reason,string? SocketError,string? Host);
 internal enum ServiceMode { Mixed, Strict }
-internal sealed class AuxiliaryBudgetException() : IOException("辅助请求 IPv4 额度已用完；大文件仍限 IPv6");
+internal sealed class AuxiliaryBudgetException() : IOException("辅助原路径额度用尽；请点击补充，内容仍限 IPv6");
 internal sealed class IPv6RouteException(string reason,Exception? inner=null) : IOException("IPv6 route unavailable",inner)
 {
     internal string Reason {get;}=reason;
@@ -87,6 +87,13 @@ internal sealed class DownloadRouter : IAsyncDisposable
     long capacityRejected;
     long acceptErrors;int lastAcceptSocketError;
     long processAttributed;
+    internal sealed record RouteEvent(DateTime TimeUtc,string Site,string Event,string? Host,string? Family,string? Peer,string? Reason);
+    readonly ConcurrentQueue<RouteEvent> recentRoutes=new();
+    void TraceRoute(string site,string action,string? host=null,string? family=null,string? peer=null,string? reason=null){
+        recentRoutes.Enqueue(new(DateTime.UtcNow,site,action,site=="global"?null:host,family,peer,reason));
+        while(recentRoutes.Count>80)recentRoutes.TryDequeue(out _);
+    }
+    internal RouteEvent[] RecentRoutes()=>recentRoutes.ToArray();
     internal long AcceptErrors=>Interlocked.Read(ref acceptErrors);
     internal object Health()=>new{activeSessions=sessions.Count,capacityRejected=Interlocked.Read(ref capacityRejected),acceptErrors=AcceptErrors,lastAcceptSocketError=Volatile.Read(ref lastAcceptSocketError),activeAcceptLoops=acceptLoops.Count(t=>!t.IsCompleted),processAttributed=Interlocked.Read(ref processAttributed),ProtectionLossReason,ProtectionLostAtUtc};
     internal Func<bool>? OwnershipProbe;
@@ -142,6 +149,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         }else settings.Dispose();}}
         catch{row.Enabled=previous;throw;}
         row.State=on?(row.Mode==ServiceMode.Mixed?"混合保护：内容仅 IPv6":"严格模式：仅 IPv6"):"已关闭，允许 IPv4／原代理";
+        TraceRoute(id,on?"enabled":"disabled",reason:row.Mode.ToString());
         foreach(var pair in sessions.Where(p=>p.Value.Site==id))pair.Value.Close();
     }
     internal void SetMode(string id,ServiceMode mode){
@@ -149,6 +157,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         if(row.Mode==mode)return;
         if(ProtectionLost&&row.Enabled)throw new InvalidOperationException("接管已失效，不能更改已开启服务的模式");
         row.Mode=mode;
+        TraceRoute(id,"mode",reason:mode.ToString());
         row.State=row.Enabled?(mode==ServiceMode.Mixed?"混合保护：内容仅 IPv6":"严格模式：仅 IPv6"):"已关闭，允许 IPv4／原代理";
         foreach(var s in sessions.Values.Where(s=>s.Site==id))s.Close();
     }
@@ -311,19 +320,24 @@ internal sealed class DownloadRouter : IAsyncDisposable
         string host=url.IdnHost;var site=forcedSite??processSite??Classify(host)??"global";
         bool auxiliary=ProductionPolicies&&AuxiliaryHosts.GetValueOrDefault(host)==site;
         var row=Counters[site];int id=Interlocked.Increment(ref connectionId);var session=new RelaySession(site,client);sessions[id]=session;
-        bool responseStarted=false,originalControl=false;string stage="connect";
+        bool responseStarted=false,originalControl=false,auxiliaryV6Only=false;string stage="connect";
         try{
             if(!CanServe(site))throw new IOException("代理设置失效");
             if(ContentTestHost!=null&&(ContentTestStopped||!host.Equals(ContentTestHost,StringComparison.OrdinalIgnoreCase)))throw new IOException("测试已停止或下载域名未验证，已拒绝连接");
             originalControl=auxiliary&&row.Enabled&&row.Mode==ServiceMode.Mixed;
-            if(originalControl&&row.Auxiliary.Used>=AuxiliaryBudget.Limit)throw new AuxiliaryBudgetException();
+            auxiliaryV6Only=originalControl&&row.Auxiliary.Used>=row.Auxiliary.Capacity;
             bool legacyGlobal=ProductionPolicies&&site=="global"&&!row.Enabled;
-            bool strict=row.Enabled&&!originalControl;
+            bool strict=row.Enabled&&(!originalControl||auxiliaryV6Only);
             // Login, listing and link issuance must not inherit the unrelated global IPv6 preference.
-            var connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost&&!originalControl,row,url.Scheme,handshake.Token,legacyGlobal);using var upstream=connected.Client;Stream output=upstream.GetStream();
+            (TcpClient Client,bool Proxy) connected;
+            try{connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost&&(!originalControl||auxiliaryV6Only),row,url.Scheme,handshake.Token,legacyGlobal);}
+            catch(IPv6RouteException)when(auxiliaryV6Only){throw new AuxiliaryBudgetException();}
+            using var upstream=connected.Client;Stream output=upstream.GetStream();
             bool v6=((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.AddressFamily==AddressFamily.InterNetworkV6;
+            TraceRoute(site,originalControl?"auxiliary":"content",host,connected.Proxy?"Unknown":v6?"IPv6":"IPv4",
+                connected.Proxy?null:((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.ToString());
             if(originalControl&&(!v6||connected.Proxy))output=new AuxiliaryStream(output,row.Auxiliary);
-            strict=row.Enabled&&!(auxiliary&&row.Mode==ServiceMode.Mixed);
+            strict=row.Enabled&&(!(auxiliary&&row.Mode==ServiceMode.Mixed)||auxiliaryV6Only);
             if(!CanServe(site)||(ContentTestHost!=null&&ContentTestStopped)||(strict&&(!v6||connected.Proxy)))throw new IOException("路由策略已变更，拒绝原路径");
             if(tunnel){responseStarted=true;await input.WriteAsync("HTTP/1.1 200 Connection Established\r\n\r\n"u8.ToArray(),handshake.Token);}
             else{
@@ -342,6 +356,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
             Exception? cause=ex;while(cause!=null&&cause is not SocketException)cause=cause.InnerException;
             string? reason=(ex as IPv6RouteException)?.Reason;
             row.LastFailure=new(DateTime.UtcNow,stage,ex.GetType().Name,reason,(cause as SocketException)?.SocketErrorCode.ToString(),site=="global"?null:host);
+            TraceRoute(site,"failed",host,reason:reason??(ex is AuxiliaryBudgetException?"auxiliary_budget_exhausted":(cause as SocketException)?.SocketErrorCode.ToString()??ex.GetType().Name));
             row.State=ex is AuxiliaryBudgetException?ex.Message:ProtectionLost&&row.Enabled?"代理设置失效：未受保护，请暂停下载":originalControl?"辅助请求原路径失败；内容仍限 IPv6":row.Enabled?reason switch{"no_aaaa"=>"此下载域名未查到 IPv6；未回退 IPv4","dns_failed"=>"IPv6 解析失败；未回退 IPv4","ipv6_connect_failed"=>"IPv6 连接失败；未回退 IPv4","selected_node_unavailable"=>"所选节点不可达；请更新节点或恢复自动",_=>"IPv6 传输失败；未回退 IPv4"}:"连接失败："+ex.GetType().Name;
             if(!responseStarted)try{using var replyTimeout=new CancellationTokenSource(1000);await input.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"u8.ToArray(),replyTimeout.Token);}catch{}
         }
