@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.3.1";
+    const string Version = "3.3.2";
     DownloadRouter? router;
     NativeCapture? native;
     readonly Dictionary<string,DownloadCounter> counters = DownloadRouter.Sites.ToDictionary(s=>s.Id,_=>new DownloadCounter { Mode=ServiceMode.Mixed });
