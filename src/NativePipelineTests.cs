@@ -69,7 +69,7 @@ internal static class NativePipelineTests
                                 try
                                 {
                                     string header=await Header(caller.GetStream(),stop.Token);
-                                    if(!header.StartsWith($"CONNECT www.bilibili.com:{originPort} HTTP/1.1\r\n",StringComparison.Ordinal))
+                                    if(!header.StartsWith($"CONNECT www.youtube.com:{originPort} HTTP/1.1\r\n",StringComparison.Ordinal))
                                         throw new IOException("Unexpected original-proxy destination: "+header.Split('\r')[0]);
                                     Interlocked.Increment(ref proxyConnections);
                                     await upstream.ConnectAsync(IPAddress.Loopback,originPort,stop.Token);
@@ -89,10 +89,15 @@ internal static class NativePipelineTests
                 await using var router=new DownloadRouter{ProductionPolicies=true};
                 await router.Start(false);
                 router.FallbackProxy="127.0.0.1:"+proxyPort;
-                router.Resolve=_=>Task.FromResult(new[]{IPAddress.IPv6Loopback});
+                int originalV6DnsCalls=0;
+                router.Resolve=host=>{
+                    if(host=="original-v6.bilivideo.com"){Interlocked.Increment(ref originalV6DnsCalls);throw new SocketException((int)SocketError.HostNotFound);}
+                    return Task.FromResult(new[]{IPAddress.IPv6Loopback});
+                };
                 router.OriginalResolve=_=>Task.FromResult(new[]{IPAddress.Loopback});
                 router.Enable("bilibili",true);router.SetMode("bilibili",ServiceMode.Mixed);
                 router.Enable("quark",true);router.SetMode("quark",ServiceMode.Mixed);
+                router.Enable("youtube",true);router.SetMode("youtube",ServiceMode.Mixed);
                 using var free=new TcpListener(IPAddress.Loopback,0);free.Start();
                 int corePort=((IPEndPoint)free.LocalEndpoint).Port;free.Stop();
                 await using var dns=new RoutingRecoveryTests.FixtureDns();
@@ -110,7 +115,7 @@ internal static class NativePipelineTests
                     config["rules"]=((string[])config["rules"]).Where(r=>!r.Contains("PROCESS-NAME,"+own,StringComparison.Ordinal)&&
                         !r.StartsWith("IP-CIDR",StringComparison.Ordinal)).ToArray();
                     config["sniffer"]=new Dictionary<string,object>{
-                        ["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=true,
+                        ["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=false,
                         ["sniff"]=new Dictionary<string,object>{{"TLS",new{ports=new[]{originPort}}}}};
                 });
                 async Task Probe(int port,string host)
@@ -130,18 +135,38 @@ internal static class NativePipelineTests
                             coreExit=core.ExitCode,coreLog=core.TestLog.ToArray()}),ex);
                     }
                 }
+                async Task ProbeRawTls(string address,string host)
+                {
+                    using var client=new TcpClient();
+                    await client.ConnectAsync(IPAddress.Loopback,corePort,stop.Token);
+                    var stream=client.GetStream();
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes($"CONNECT {address}:{originPort} HTTP/1.1\r\nHost: {address}:{originPort}\r\n\r\n"),stop.Token);
+                    if(!(await Header(stream,stop.Token)).StartsWith("HTTP/1.1 200"))throw new IOException("Raw TLS CONNECT failed");
+                    using var tls=new SslStream(stream,false,(_,c,_,_)=>c?.GetCertHashString()==certificate.Thumbprint);
+                    await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions{TargetHost=host},stop.Token);
+                    await tls.WriteAsync(Encoding.ASCII.GetBytes($"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),stop.Token);
+                    string header=await Header(tls,stop.Token);
+                    byte[] body=new byte[8];await tls.ReadExactlyAsync(body,stop.Token);
+                    Check(header.StartsWith("HTTP/1.1 200")&&Encoding.ASCII.GetString(body)=="pipeline",
+                        "Raw-IP core CONNECT recovers TLS SNI and replays ClientHello end to end: "+host);
+                }
                 try
                 {
                     await Probe(router.Port,"www.bilibili.com");
                     await Probe(corePort,"www.bilibili.com");
                     await Probe(corePort,"pipeline.bilivideo.com");
+                    await ProbeRawTls("127.0.0.1","raw.bilivideo.com");
+                    await ProbeRawTls("[::1]","original-v6.bilivideo.com");
+                    Check(originalV6DnsCalls==0,"A healthy client-selected IPv6 server is used without a second DNS lookup");
                     await Probe(corePort,"px.wpk.quark.cn");
+                    await Probe(corePort,"www.youtube.com");
                     Check(router.Counters["quark"].V4>0&&router.Counters["quark"].Proxy==0&&router.Counters["quark"].Auxiliary.Used>0,
                         "Exact Quark auxiliary HTTPS bypasses original proxy with metered IPv4");
-                    Check(proxyConnections==2&&router.Counters["bilibili"].Proxy>0&&router.Counters["bilibili"].V4==0,
-                        "Auxiliary HTTPS uses original proxy with unknown-exit accounting");
+                    Check(proxyConnections==1&&router.Counters["youtube"].Proxy>0&&router.Counters["youtube"].V4==0&&
+                        router.Counters["bilibili"].Proxy==0&&router.Counters["bilibili"].V4>0,
+                        "Domestic auxiliary bypasses the original proxy; overseas auxiliary preserves unknown-exit accounting");
                     Check(router.Counters["bilibili"].V6>0,"Content HTTPS remains actual IPv6 without original-proxy fallback");
-                    Check(router.Counters["bilibili"].ContentStarted==1&&router.Counters["bilibili"].ContentReceived>0&&
+                    Check(router.Counters["bilibili"].ContentStarted==3&&router.Counters["bilibili"].ContentReceived>0&&
                         router.Counters["quark"].ContentStarted==0&&router.Counters["quark"].ContentReceived==0,
                         "Diagnostic content progress excludes auxiliary HTTPS traffic");
                     Check(router.Counters["bilibili"].Failures==0,"No hidden relay failures in the complete local chain");

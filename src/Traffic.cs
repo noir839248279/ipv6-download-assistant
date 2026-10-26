@@ -24,9 +24,11 @@ public sealed class TrafficStore
     readonly HashSet<int> pids = new();
     long last = Stopwatch.GetTimestamp();
     public long Dropped { get; private set; }
+    internal TimeSpan? RetainIdle;
     public void Select(IEnumerable<int> ids) { lock(gate) { pids.Clear(); pids.UnionWith(ids); flows.Clear(); Dropped = 0; last = Stopwatch.GetTimestamp(); } }
     public void AddPid(int pid) { lock(gate) pids.Add(pid); }
     public void RemovePid(int pid) { lock(gate) pids.Remove(pid); }
+    internal void ForgetPid(int pid) { lock (gate) { pids.Remove(pid); foreach (var key in flows.Keys.Where(k => k.Pid == pid).ToArray()) flows.Remove(key); } }
     public bool Contains(int pid) { lock(gate) return pids.Contains(pid); }
     public void Add(int pid, string transport, IPAddress source, int sport, IPAddress dest, int dport, int bytes, bool receive)
     {
@@ -43,13 +45,16 @@ public sealed class TrafficStore
             c.Seen = DateTime.UtcNow;
         }
     }
-    public List<FlowView> Sample()
+    public List<FlowView> Sample(bool sorted = true)
     {
         lock(gate)
         {
             var now = Stopwatch.GetTimestamp(); var seconds = (now-last)/(double)Stopwatch.Frequency; last=now;
+            if (RetainIdle is TimeSpan idle)
+                foreach (var key in flows.Where(p => p.Value.Seen < DateTime.UtcNow - idle).Select(p => p.Key).ToArray()) flows.Remove(key);
             foreach(var c in flows.Values) { c.Rate = (c.Rx-c.Previous)/Math.Max(.001,seconds); c.Previous=c.Rx; }
-            return flows.Select(x=>new FlowView(x.Key,x.Value.Rx,x.Value.Tx,x.Value.Rate,x.Value.Seen,Scope(IPAddress.Parse(x.Key.Remote)))).OrderByDescending(x=>x.Rate).ThenByDescending(x=>x.Received).ToList();
+            var result = flows.Select(x=>new FlowView(x.Key,x.Value.Rx,x.Value.Tx,x.Value.Rate,x.Value.Seen,Scope(IPAddress.Parse(x.Key.Remote))));
+            return sorted ? result.OrderByDescending(x=>x.Rate).ThenByDescending(x=>x.Received).ToList() : result.ToList();
         }
     }
     public static string Scope(IPAddress ip)
@@ -74,6 +79,10 @@ public sealed class EtwCollector : IDisposable
     TraceEventSession? session;
     Process? watchdog;
     readonly string role;
+    internal Func<int, string, bool>? ProcessStarted;
+    internal Action<int>? ProcessStopped;
+    internal Action<int, string, string, uint>? DnsObserved;
+    internal string DnsStatus { get; private set; } = "未启用进程 DNS 关联";
     public string Status { get; private set; } = "未启动";
     public long Lost => session?.EventsLost ?? 0;
     public EtwCollector(TrafficStore store,string role="") { this.store=store;this.role=role; }
@@ -89,6 +98,27 @@ public sealed class EtwCollector : IDisposable
             session=new TraceEventSession("IPv6Lens-"+Environment.ProcessId+(role.Length>0?"-"+role:"")) { StopOnDispose=true, BufferSizeMB=64 };
             // TraceEvent must enable the kernel provider before Source is materialized.
             session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP | KernelTraceEventParser.Keywords.Process);
+            if (DnsObserved != null)
+            {
+                try
+                {
+                    session.EnableProvider("Microsoft-Windows-DNS-Client", Microsoft.Diagnostics.Tracing.TraceEventLevel.Informational);
+                    session.Source.Dynamic.All += d =>
+                    {
+                        if ((int)d.ID != 3008 || d.ProviderName != "Microsoft-Windows-DNS-Client" || !store.Contains(d.ProcessID)) return;
+                        try
+                        {
+                            DnsObserved(d.ProcessID, d.PayloadByName("QueryName")?.ToString() ?? "",
+                                d.PayloadByName("QueryResults")?.ToString() ?? "",
+                                Convert.ToUInt32(d.PayloadByName("QueryStatus")));
+                        }
+                        catch (Exception ex) when (ex is ArgumentException or FormatException or OverflowException or InvalidCastException)
+                        { DnsStatus = "DNS 事件格式不可用；浏览器 / AList 统计可能缺失"; }
+                    };
+                    DnsStatus = "进程 DNS 关联已启用（共享地址 / 加密 DNS 可能漏计）";
+                }
+                catch (Exception ex) { DnsStatus = "DNS 关联不可用：" + ex.GetType().Name; }
+            }
             var start=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};
             foreach(var a in new[]{"--trace-watch",Environment.ProcessId.ToString(),Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks.ToString()})start.ArgumentList.Add(a);
             if(role.Length>0)start.ArgumentList.Add(role);
@@ -103,8 +133,11 @@ public sealed class EtwCollector : IDisposable
             k.UdpIpSend += d=>store.Add(d.ProcessID,"UDP",d.saddr,d.sport,d.daddr,d.dport,d.size,false);
             k.UdpIpRecvIPV6 += d=>store.Add(d.ProcessID,"UDP",d.saddr,d.sport,d.daddr,d.dport,d.size,true);
             k.UdpIpSendIPV6 += d=>store.Add(d.ProcessID,"UDP",d.saddr,d.sport,d.daddr,d.dport,d.size,false);
-            k.ProcessStart += d=> { if(store.Contains(d.ParentID)) store.AddPid(d.ProcessID); };
-            k.ProcessStop += d=>store.RemovePid(d.ProcessID);
+            k.ProcessStart += d=> {
+                if (ProcessStarted != null) { if (ProcessStarted(d.ProcessID, d.ImageFileName)) store.AddPid(d.ProcessID); }
+                else if(store.Contains(d.ParentID)) store.AddPid(d.ProcessID);
+            };
+            k.ProcessStop += d=> { store.RemovePid(d.ProcessID); ProcessStopped?.Invoke(d.ProcessID); };
             Status="正在采集 TCP + UDP（含 QUIC），统计从本次监控开始";
             var source=session.Source;
             Task.Run(()=> { try { source.Process(); } catch(Exception ex) { Status="采集停止："+ex.GetType().Name; } });

@@ -46,7 +46,8 @@ internal static class MixedPolicyTests
                 await router.Start(false);
                 int originalQueries=0;
                 router.Resolve=_=>Task.FromResult(new[]{IPAddress.Loopback});
-                router.OriginalResolve=_=>{originalQueries++;return Task.FromResult(new[]{IPAddress.Loopback});};
+                router.OriginalResolve=host=>{originalQueries++;return Task.FromResult(new[]{
+                    host=="unknown.example"?IPAddress.Parse("192.0.2.1"):IPAddress.Loopback});};
                 router.EnableAll();
                 var native=(Dictionary<string,object>)NativeCapture.Config(router,0,"",false);
                 var rules=(string[])native["rules"];
@@ -72,7 +73,8 @@ internal static class MixedPolicyTests
                     string id=DownloadRouter.Classify(host)??"global";
                     router.SetMode(id,ServiceMode.Mixed);
                     int before=originalQueries;
-                    Check(!await Ok(host)&&originalQueries==before,$"{id}: mixed content or unknown host cannot fall back");
+                    Check(!await Ok(host)&&originalQueries==before+(id=="global"?1:0),
+                        $"{id}: mixed content or public unknown host cannot fall back (local-network lookup is permitted)");
                 }
                 router.Resolve=_=>Task.FromResult(new[]{IPAddress.IPv6Loopback});
                 Check(await Ok("fresh.bilivideo.com")&&router.Counters["bilibili"].V6>0,"Mixed content succeeds on actual IPv6 socket");
@@ -129,12 +131,12 @@ internal static class MixedPolicyTests
                         await ReadHeader(stream,stop.Token);
                         await stream.WriteAsync("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"u8.ToArray(),stop.Token);
                     });
-                    long old4=router.Counters["bilibili"].V4,oldAllowance=router.Counters["bilibili"].Auxiliary.Used;
+                    long old4=router.Counters["youtube"].V4,oldAllowance=router.Counters["youtube"].Auxiliary.Used;
                     router.FallbackProxy="127.0.0.1:"+((IPEndPoint)proxy.LocalEndpoint).Port;
-                    Check(await Ok("api.bilibili.com"),"Mixed auxiliary can retain an original upstream proxy");
+                    Check(await Ok("accounts.google.com"),"Overseas mixed auxiliary can retain an original upstream proxy");
                     await response;
-                    Check(router.Counters["bilibili"].Proxy>0&&router.Counters["bilibili"].V4==old4&&
-                        router.Counters["bilibili"].Auxiliary.Used>oldAllowance,
+                    Check(router.Counters["youtube"].Proxy>0&&router.Counters["youtube"].V4==old4&&
+                        router.Counters["youtube"].Auxiliary.Used>oldAllowance,
                         "Unknown proxy exit is charged to allowance without claiming IPv4");
                 }
                 var observed=new DownloadCounter();

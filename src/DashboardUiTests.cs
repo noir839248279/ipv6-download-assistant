@@ -29,24 +29,36 @@ internal sealed partial class DownloadForm
         Check(actions.Any(a => a.Text == "记录卡顿") && diagnosticStatus.Parent == canvas &&
             version.Text == "v" + typeof(DownloadForm).Assembly.GetName().Version!.ToString(3),
             "Slowdown recording and report status are visible and version follows the assembly");
-        Check(counters.Values.All(r=>r.Mode==ServiceMode.Mixed),"All service mode selectors default to protected mixed");
+        Check(counters.Values.All(r=>r.Mode==ServiceMode.Mixed) && cards.Values.All(c => c.MixedToggle.Checked),
+            "Per-service mixed switches default to auxiliary-only protected mixed");
+        Check(cards.Values.Where(c => c.Id != "global").All(c => c.MixedToggle.Visible) && !cards["global"].MixedToggle.Visible,
+            "Mixed toggles are visible for content services and omitted for ordinary websites");
         Check(router!.Pac().Contains("return url.substring(0,6)==='https:'?"),
             "Disabled other-websites policy keeps original PAC path");
-        cards["quark"].ModeSelect.SelectedIndex=1;await serviceWork;
+        cards["quark"].MixedToggle.Checked=false;await serviceWork;
         Check(counters["quark"].Mode==ServiceMode.Strict && counters["bilibili"].Mode==ServiceMode.Mixed,
             "Mode selection affects only its own service");
-        cards["quark"].ModeSelect.SelectedIndex=0;await serviceWork;
+        counters["quark"].Auxiliary.Reserve(25);
+        cards["quark"].MixedToggle.Checked=true;await serviceWork;
+        Check(counters["quark"].Auxiliary.Used == 25 && hint.Text.Contains("内容仍仅 IPv6"),
+            "Mixed switch gives explicit feedback without restoring or expanding the allowance");
         int syncCalls=0;
         SyncServicesTest=_=>++syncCalls==1?Task.FromException(new IOException("Injected selector failure")):Task.CompletedTask;
         await Switch("quark",false);
         Check(DefaultsActive && syncCalls==2,"Single-service sync failure rolls back target without stopping all services");
+        syncCalls = 0;
+        cards["quark"].MixedToggle.Checked = false; await serviceWork;
+        Check(counters["quark"].Mode == ServiceMode.Mixed && cards["quark"].MixedToggle.Checked && syncCalls == 2,
+            "Failed mixed-mode update restores its own switch and policy without affecting other services");
         SyncServicesTest=null;
-        counters["quark"].V6=12345;counters["quark"].Auxiliary.Reserve(100);
+        counters["quark"].V6=12345;
+        long allowanceBeforeStop = counters["quark"].Auxiliary.Used;
+        counters["quark"].Auxiliary.Reserve(100);
         await SetAll(false);
         Check(counters["quark"].V6==12345&&cards["quark"].Bytes[0]==12345,
             "Stopping capture retains cumulative totals on dashboard");
         await SetAll(true);
-        Check(counters["quark"].V6==12345&&counters["quark"].Auxiliary.Used==100,
+        Check(counters["quark"].V6==12345&&counters["quark"].Auxiliary.Used==allowanceBeforeStop + 100,
             "Restarting relay preserves totals and auxiliary allowance");
         ResetTraffic();
         var pendingRead = new TaskCompletionSource<SplitState>();
@@ -96,6 +108,7 @@ internal sealed partial class DownloadForm
         var layoutSamples = new List<object>();
         bool contentBounded = true;
         bool actionsBounded = true;
+        bool modesBounded = true;
         foreach (int width in new[] { 1280, 920, 560, 1280, 920, 1280 })
         {
             ClientSize = new(Px(width), Px(850)); LayoutDashboard();
@@ -105,7 +118,10 @@ internal sealed partial class DownloadForm
             int extent = viewport.DisplayRectangle.Height;
             layoutSamples.Add(new { width, dpi = DeviceDpi, canvas = canvas.Bounds,
                 hintBottom = hint.Bottom, trailing, extent, viewport = viewport.ClientSize,
-                scroll = viewport.AutoScrollPosition, display = viewport.DisplayRectangle });
+                scroll = viewport.AutoScrollPosition, display = viewport.DisplayRectangle,
+                actions = actions.Select(a => new { a.Text, a.Bounds }).ToArray(),
+                title = title.Bounds, network = network.Bounds,
+                coverage = coverage.Bounds, diagnostic = diagnosticStatus.Bounds, hint = hint.Bounds });
             contentBounded &= trailing >= 0 && trailing <= Px(24) &&
                 Math.Abs(extent - Math.Max(canvas.Height, viewport.ClientSize.Height)) <= Px(2) &&
                 canvas.Bottom >= Math.Min(canvas.Height, viewport.ClientSize.Height) - Px(2) &&
@@ -113,11 +129,15 @@ internal sealed partial class DownloadForm
             actionsBounded &= actions.All(a => a.Left >= 0 && a.Right <= canvas.Width &&
                 !a.Bounds.IntersectsWith(title.Bounds) && !a.Bounds.IntersectsWith(network.Bounds)) &&
                 diagnosticStatus.Top >= coverage.Bottom && hint.Top >= diagnosticStatus.Bottom;
+            modesBounded &= cards.Values.All(c => c.MixedToggle.Right <= c.Width - Px(20) &&
+                c.MixedToggle.Bottom < c.Allowance.Top &&
+                !c.MixedToggle.Bounds.IntersectsWith(c.Toggle.Bounds));
         }
         File.WriteAllText(prefix + ".layout.json", JsonSerializer.Serialize(layoutSamples,
             new JsonSerializerOptions { WriteIndented = true, IncludeFields = true }));
         Check(contentBounded, "Repeated resize and bottom scrolling keep content extent within the footer");
         Check(actionsBounded, "New action and diagnostic status do not overlap header, network or footer at all tested widths");
+        Check(modesBounded, "Mixed switches fit independently of capture switches and allowance at all tested widths");
         DashboardTheme.Light = true; ApplyTheme();
         using (var bottom = new Bitmap(viewport.Width, viewport.Height))
         {
@@ -213,6 +233,21 @@ internal sealed partial class DownloadForm
         await SetAll(false); await SetAll(true);
         Check(DefaultsActive && !lossNotified, "Off then on recovers isolated relay and all switches");
         Snapshot("empty");
+        await SetAll(false);
+        HasIPv6 = () => false;
+        await Initialize();
+        timer.Stop();
+        Check(DefaultsActive && hint.Text.Contains("IPv6 限制") && network.Text.Contains("无 IPv6"),
+            "No local IPv6 keeps content protection selected and explicitly warns instead of silently bypassing");
+        await Switch("bilibili", false);
+        Check(counters["quark"].Enabled && cards["quark"].State.Contains("无本机 IPv6") &&
+            counters["quark"].V4 == 0 && !counters["bilibili"].Enabled,
+            "Without IPv6 an explicit service disable affects only that service, not other protection");
+        Snapshot("no-ipv6");
+        HasIPv6 = () => true; UpdateNetworkAvailability();
+        Check(counters["quark"].Enabled && !counters["bilibili"].Enabled,
+            "IPv6 availability changes do not silently change service selection");
+        await SetAll(false);
         return new { state = "passed", checks, dpi = DeviceDpi };
     }
 }

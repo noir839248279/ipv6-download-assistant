@@ -18,7 +18,9 @@ internal sealed class NativeCapture : IAsyncDisposable
     [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr value);
     internal static string CorePath=>Path.Combine(AppContext.BaseDirectory,"core","mihomo.exe");
     internal static string ServiceGroup(string id)=>"Service-"+id;
-    internal static string RelayFor(string id)=>id=="steam"?"SteamRelay":id=="epic"?"EpicRelay":"BrowserRelay";
+    internal static string RelayFor(string id)=>id switch{
+        "steam"=>"SteamRelay","epic"=>"EpicRelay","quark"=>"QuarkRelay",
+        "bilibili"=>"BilibiliRelay","youtube"=>"YouTubeRelay",_=>"BrowserRelay"};
     internal static object Config(DownloadRouter router,int control,string secret,bool tun){
         var config=new Dictionary<string,object>{
         ["mode"]="rule",["ipv6"]=true,["log-level"]="silent",["find-process-mode"]="always",
@@ -27,12 +29,11 @@ internal sealed class NativeCapture : IAsyncDisposable
             ["route-exclude-address"]=new[]{"10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","169.254.0.0/16","fc00::/7","fe80::/10"}},
         // Retain campus/private DNS answers instead of replacing them with public DoH.
         ["dns"]=new Dictionary<string,object>{["enable"]=true,["ipv6"]=true,["enhanced-mode"]="redir-host",["nameserver"]=new[]{"system://"},["direct-nameserver"]=new[]{"system://"}},
-        ["sniffer"]=new Dictionary<string,object>{["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=true,["sniff"]=new{HTTP=new{ports=new[]{80,8080}},TLS=new{ports=new[]{443}},QUIC=new{ports=new[]{443}}}},
-        ["proxies"]=new object[]{new{name="BrowserRelay",type="http",server="127.0.0.1",port=router.Port},new{name="SteamRelay",type="http",server="127.0.0.1",port=router.SteamPort},new{name="EpicRelay",type="http",server="127.0.0.1",port=router.EpicPort},
-            new Dictionary<string,object>{["name"]="IPv6Origin",["type"]="direct",["ip-version"]="ipv6"},
-            new Dictionary<string,object>{["name"]="IPv4Origin",["type"]="direct",["ip-version"]="ipv4"}},
+        // SniffHost classifies the service without erasing the client's chosen IP.
+        // The relay reads SNI/Host itself when an enabled service arrives by IP.
+        ["sniffer"]=new Dictionary<string,object>{["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=false,["sniff"]=new{HTTP=new{ports=new[]{80,8080}},TLS=new{ports=new[]{443}},QUIC=new{ports=new[]{443}}}},
         ["rules"]=new[]{
-            // Sniffing can erase DstIP. The origin socket's source family survives it.
+            // Keep origin family protection independent of DNS/sniffer metadata.
             "AND,((PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+"),(SRC-IP-CIDR,::/0)),IPv6Origin",
             "AND,((PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+"),(SRC-IP-CIDR,0.0.0.0/0)),IPv4Origin",
             "PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+",DIRECT","PROCESS-NAME,mihomo.exe,DIRECT","PROCESS-NAME,verge-mihomo.exe,DIRECT","PROCESS-NAME,verge-mihomo-alpha.exe,DIRECT","PROCESS-NAME,clash.exe,DIRECT","PROCESS-NAME,sing-box.exe,DIRECT",
@@ -55,6 +56,13 @@ internal sealed class NativeCapture : IAsyncDisposable
             "DOMAIN-SUFFIX,epicgamescdn.com,EpicRelay","DOMAIN-SUFFIX,epicgames-download1.akamaized.net,EpicRelay",
             "MATCH,DIRECT"}
         };
+        // A literal-IP CONNECT must retain its service even without visible SNI.
+        config["proxies"]=DownloadRouter.Sites.Where(s=>s.Id!="global")
+            .Select(s=>(object)new{name=RelayFor(s.Id),type="http",server="127.0.0.1",port=router.ServicePort(s.Id)})
+            .Concat(new object[]{
+                new{name="BrowserRelay",type="http",server="127.0.0.1",port=router.Port},
+                new Dictionary<string,object>{["name"]="IPv6Origin",["type"]="direct",["ip-version"]="ipv6"},
+                new Dictionary<string,object>{["name"]="IPv4Origin",["type"]="direct",["ip-version"]="ipv4"}}).ToArray();
         // Native clients do not consult PAC. Give their service switches independent
         // selectors so DIRECT never traverses the C# content relay when disabled.
         config["proxy-groups"]=DownloadRouter.Sites.Where(s=>s.Id!="global").Select(s=>new Dictionary<string,object>{
@@ -79,6 +87,7 @@ internal sealed class NativeCapture : IAsyncDisposable
     }
     internal async Task SyncServices(DownloadRouter router,IEnumerable<string> ids){
         if(api==null||!Active)throw new IOException("网络内核未运行");
+        ids=ids.Distinct().ToArray();
         foreach(string id in ids.Where(id=>id!="global")){
             string group=ServiceGroup(id);
             using var body=new StringContent(JsonSerializer.Serialize(new{name=router.Counters[id].Enabled?RelayFor(id):"DIRECT"}),System.Text.Encoding.UTF8,"application/json");

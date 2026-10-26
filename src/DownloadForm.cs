@@ -11,15 +11,18 @@ internal sealed partial class DownloadForm : Form
     PassiveTraffic? passive;
     DateTime lastSample = DateTime.UtcNow;
     internal Func<IEnumerable<string>,Task>? SyncServicesTest;
+    internal Func<bool> HasIPv6 = () => NodeNetwork.CaptureInterface() != 0;
+    bool? ipv6Available;
+    DateTime nextNetworkCheck;
     readonly SplitRouting clashBinding = new();
     readonly Dictionary<string, ServiceTile> cards = new();
     readonly Panel viewport = new() { Dock = DockStyle.Fill, AutoScroll = true };
     readonly Panel canvas = new();
     readonly Label title = MakeLabel("IPv6 下载助手", 18, true);
     readonly Label version = MakeLabel("v" + Version, 9);
-    readonly Label network = MakeLabel("正在检测 IPv4 / IPv6 网络连接…", 9);
-    readonly Label hint = MakeLabel("正在启动下载接管…", 9);
-    readonly Label coverage = MakeLabel("旁路统计：仅识别夸克 / Steam / Epic 原生进程；浏览器、AList、代理不完整。", 9);
+    readonly Label network = MakeLabel("正在检查本机 IPv6 出口…", 9);
+    readonly Label hint = MakeLabel("正在准备服务监测…", 9);
+    readonly Label coverage = MakeLabel("关闭接管仍监测流量；浏览器 / AList 使用 DNS 关联，未识别部分不计入服务。", 9);
     readonly LinkLabel diagnosticStatus = new() { Text = "诊断：点击打开报告目录",
         AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, LinkBehavior = LinkBehavior.HoverUnderline };
     static string ReportsDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IPv6Lens", "reports");
@@ -49,6 +52,7 @@ internal sealed partial class DownloadForm : Form
     public DownloadForm(bool testMode = false)
     {
         this.testMode = testMode;
+        if (testMode) HasIPv6 = () => true;
         AutoScaleMode = AutoScaleMode.Dpi;
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         Text = "IPv6 下载助手 " + Version;
@@ -93,7 +97,7 @@ internal sealed partial class DownloadForm : Form
             var tile = new ServiceTile(id);
             cards[id] = tile; canvas.Controls.Add(tile);
             tooltips.SetToolTip(tile.Toggle, "仅切换此服务；关闭后恢复原路径");
-            tooltips.SetToolTip(tile.ModeSelect, "混合保护：明确辅助域名可走原路径，初始 2 MiB，补充须确认；下载/视频/未知域名不回退 IPv4。严格模式全部仅 IPv6。");
+            tooltips.SetToolTip(tile.MixedToggle, "混合模式开：仅明确辅助请求允许限额 IPv4，初始 2 MiB；视频、下载和未知请求仍仅 IPv6。关：辅助请求也必须使用 IPv6。不会自动补充额度。");
             tile.Allowance.LinkClicked += (_,_) => {
                 if(busy||closing||counters[id].Mode!=ServiceMode.Mixed)return;
                 if(MessageBox.Show(this,"仅为"+tile.AccessibleName+"增加 2 MiB 辅助原路径额度（收发合计）。可能使用 IPv4 或原代理；下载和视频仍只允许 IPv6。是否补充？",
@@ -107,10 +111,10 @@ internal sealed partial class DownloadForm : Form
                 if (busy || closing) return;
                 serviceWork = Switch(id, tile.Toggle.Checked); await serviceWork;
             };
-            tile.ModeSelect.SelectedIndexChanged += async (_, _) =>
+            tile.MixedToggle.CheckedChanged += async (_, _) =>
             {
                 if (busy || closing) return;
-                serviceWork = ChangeMode(id, tile.ModeSelect.SelectedIndex == 0 ? ServiceMode.Mixed : ServiceMode.Strict);
+                serviceWork = ChangeMode(id, tile.MixedToggle.Checked ? ServiceMode.Mixed : ServiceMode.Strict);
                 await serviceWork;
             };
         }
@@ -233,9 +237,11 @@ internal sealed partial class DownloadForm : Form
         }
         y += ((cards.Count + columns - 1) / columns) * 344;
         Place(coverage, left, y, inner, 30);
-        Place(diagnosticStatus, left, y + 30, inner, 30);
-        Place(hint, left, y + 60, inner, 34);
-        canvas.Height = Px(y + 112);
+        // Anchor to actual pixel edges; rounding adjacent logical positions at
+        // fractional DPI can otherwise overlap the footer by one pixel.
+        diagnosticStatus.SetBounds(Px(left), coverage.Bottom, Px(inner), Px(30));
+        hint.SetBounds(Px(left), diagnosticStatus.Bottom, Px(inner), Px(34));
+        canvas.Height = hint.Bottom + Px(18);
     }
 
     static Label MakeLabel(string text, float size, bool bold = false) => new()
@@ -252,6 +258,7 @@ internal sealed partial class DownloadForm : Form
             label.ForeColor = label == title || label == sectionTitle ? DashboardTheme.Text : DashboardTheme.Muted;
         }
         version.ForeColor = DashboardTheme.V6;
+        if (ipv6Available == false) network.ForeColor = DashboardTheme.Unknown;
         diagnosticStatus.LinkColor = diagnosticStatus.ActiveLinkColor = DashboardTheme.V6;
         foreach (var button in actions) button.RefreshTheme();
         foreach (var tile in cards.Values) tile.RefreshAllowanceTheme();
@@ -271,7 +278,7 @@ internal sealed partial class DownloadForm : Form
     {
         bool enabled = !busy && !closing && !clashBusy;
         master.Enabled = enabled;
-        foreach (var tile in cards.Values) { tile.Toggle.Enabled = enabled; tile.ModeSelect.Enabled = enabled; }
+        foreach (var tile in cards.Values) { tile.Toggle.Enabled = enabled; tile.MixedToggle.Enabled = enabled && tile.Id != "global"; }
         foreach (var button in actions) button.Enabled = !closing && !busy && !clashBusy;
         split.Toggle.Enabled = enabled && !clashPolling && !testMode;
     }
@@ -294,6 +301,7 @@ internal sealed partial class DownloadForm : Form
         if (native != null && !native.Active) router?.MarkCaptureLost();
         if (sample)
         {
+            if (DateTime.UtcNow >= nextNetworkCheck) UpdateNetworkAvailability();
             passive?.Sample(counters, native?.Active == true);
             double seconds=Math.Max(.001,(DateTime.UtcNow-lastSample).TotalSeconds);lastSample=DateTime.UtcNow;
             // One sampling clock survives stop/start, preventing spurious rate spikes.
@@ -308,7 +316,9 @@ internal sealed partial class DownloadForm : Form
             string server = router?.MainServer(id) ?? "尚未发现服务器";
             if (server == "尚无内容连接") server = "尚未发现服务器";
             tile.Update(r, server, router?.ProtectionLost == true);
-            if(!r.Enabled && id is "bilibili" or "youtube" or "global")tile.State="原路径 · 旁路未监测";
+            if (!r.Enabled && passive != null) tile.State = passive.ServiceStatus(id);
+            if (r.Enabled && ipv6Available == false)
+                tile.State = "无本机 IPv6 出口 · 内容未回退";
             totals[0] += Interlocked.Read(ref r.V6); totals[1] += Interlocked.Read(ref r.V4); totals[2] += Interlocked.Read(ref r.Proxy);
             uploaded[0] += Interlocked.Read(ref r.Upload6); uploaded[1] += Interlocked.Read(ref r.Upload4); uploaded[2] += Interlocked.Read(ref r.UploadProxy);
             rates[0] += r.Rate6; rates[1] += r.Rate4; rates[2] += r.RateProxy;
@@ -329,10 +339,9 @@ internal sealed partial class DownloadForm : Form
             "诊断：后台记录运行中 · 点击打开报告目录";
         diagnosticStatus.LinkColor = diagnosticError == null ? DashboardTheme.V6 : DashboardTheme.Error;
         tooltips.SetToolTip(diagnosticStatus, ReportsDirectory + "\n" + (reportStatus?.Trigger ?? "低速疑似 / 连续失败 / 内核高 CPU；不会改变网络路径"));
-        if(passive!=null)coverage.Text=(passive.Status.StartsWith("正在采集")?"旁路监测运行中":"旁路监测不可用（见提示）")+
-            " · 仅夸克 / Steam / Epic 原生进程；不含浏览器 / AList，TUN 出口未知";
+        if (passive != null) coverage.Text = passive.Coverage;
         tooltips.SetToolTip(coverage, (passive?.Status ?? "旁路监测未启动") + "；丢失事件 " + (passive?.Lost ?? 0) +
-            "。开启服务按中继字节统计；关闭服务仅识别夸克/Steam/Epic公网原生进程，其他TUN或代理出口未知，不是整机账单。");
+            "。开启服务按中继字节统计；关闭后按原生进程或本进程的 DNS 关联统计公网字节。AList 不把本机转发重复计量。加密 DNS、共享地址与代理可能无法归属；TUN/代理出口未知，不是整机账单。");
         if (router?.ProtectionLost == true && !lossNotified)
         {
             lossNotified = true; SaveAutomaticReport();
@@ -355,21 +364,39 @@ internal sealed partial class DownloadForm : Form
     async Task Initialize()
     {
         if(!testMode){passive=new PassiveTraffic();passive.Start();}
+        UpdateNetworkAvailability();
         await SetAll(true,false);
+        if (ipv6Available != true)
+        {
+            hint.Text = "未检测到 IPv6 出口：已开启的内容仍保持 IPv6 限制。关闭服务才恢复可能收费的原路径。";
+            hint.ForeColor = DashboardTheme.Unknown;
+            RefreshCards(false);
+        }
         if (testMode)
         {
-            network.Text = "界面测试 · 不进行公网探测";
+            if (ipv6Available == true) network.Text = "界面测试 · 不进行公网探测";
             split.Status = "已关闭 · Clash Verge";
             split.Invalidate(); return;
         }
         if (closing) return;
+        if (!closing) { await RefreshClashBinding(); SetControlsEnabled(); clashTimer.Start(); }
+    }
+    void UpdateNetworkAvailability()
+    {
+        nextNetworkCheck = DateTime.UtcNow.AddSeconds(5);
         try
         {
-            var result = await Diagnostics.Network();
-            if (!closing) network.Text = result.Verdict;
+            ipv6Available = HasIPv6();
+            network.Text = ipv6Available == true
+                ? "本机有 IPv6 出口 · 不代表资源服务器可达"
+                : "本机无 IPv6 出口 · 原路径可能使用收费 IPv4";
+            network.ForeColor = ipv6Available == true ? DashboardTheme.Muted : DashboardTheme.Unknown;
         }
-        catch { if (!closing) network.Text = "网络检测未完成"; }
-        if (!closing) { await RefreshClashBinding(); SetControlsEnabled(); clashTimer.Start(); }
+        catch
+        {
+            ipv6Available = null;
+            network.Text = "本机 IPv6 状态读取失败 · 尚未验证连通性";
+        }
     }
     async Task RefreshClashBinding(Func<Task<SplitState>>? isolatedReader = null)
     {
@@ -527,7 +554,7 @@ internal sealed partial class DownloadForm : Form
     {
         if (native != null) { await native.DisposeAsync(); native = null; }
         if (router != null) { await router.DisposeAsync(); router = null; }
-        foreach(var row in counters.Values){row.Enabled=false;row.State="已关闭 · 原路径";row.Rate4=row.Rate6=row.RateProxy=row.UploadRate4=row.UploadRate6=row.UploadRateProxy=0;}
+        foreach(var row in counters.Values){if(row.Enabled)Interlocked.Increment(ref row.RouteRevision);row.Enabled=false;row.State="已关闭 · 原路径";row.Rate4=row.Rate6=row.RateProxy=row.UploadRate4=row.UploadRate6=row.UploadRateProxy=0;}
     }
     async Task SyncServices(IEnumerable<string> ids)
     {
@@ -557,7 +584,9 @@ internal sealed partial class DownloadForm : Form
         {
             if(router!=null){router.SetMode(id,mode);await SyncServices(new[]{id});}
             else counters[id].Mode=mode;
-            hint.Text=cards[id].AccessibleName+"已选择"+(mode==ServiceMode.Mixed?"混合保护":"严格 IPv6")+"；请重开下载连接";
+            hint.Text=cards[id].AccessibleName+(mode==ServiceMode.Mixed
+                ? "混合模式已开启：仅辅助请求可用限额 IPv4，内容仍仅 IPv6"
+                : "混合模式已关闭：严格 IPv6，辅助请求也不使用 IPv4");
             hint.ForeColor=DashboardTheme.Muted;
         }
         catch(Exception ex)
@@ -572,7 +601,7 @@ internal sealed partial class DownloadForm : Form
         }
         finally
         {
-            cards[id].ModeSelect.SelectedIndex=counters[id].Mode==ServiceMode.Mixed?0:1;
+            cards[id].MixedToggle.Checked=counters[id].Mode==ServiceMode.Mixed;
             busy=false;SetControlsEnabled();RefreshCards(false);
         }
     }
@@ -581,14 +610,15 @@ internal sealed partial class DownloadForm : Form
         暂停现有下载，打开助手后重新开始下载或刷新视频。
 
         服务开关
-        每个服务独立开启/关闭，并可选择混合保护或严格 IPv6。默认混合保护：只有列明的登录、列表、取链接等辅助域名可走原路径；下载、视频、未知域名必须走 IPv6，失败不会偷偷回退 IPv4。严格模式连辅助请求也必须走 IPv6。没有 IPv6 的资源会明确失败，可手动关闭该服务恢复原路径。
+        每个服务右上角是接管开关，下面是独立的混合模式开关。混合开：只有列明的登录、列表、取链接等辅助域名可用限额 IPv4；混合关：辅助请求也只能用 IPv6。两种模式的视频、下载、未知域名都仅用 IPv6，失败不会偷偷回退 IPv4。
+        本机没有可用 IPv6 出口时，已开启服务继续保持内容 IPv6 限制，并明确提示不可用，不会自动关闭保护。主动关闭该服务才恢复原路径，可能使用收费 IPv4。状态检查只读取本机路由，不发送公网探测。
 
         混合保护额度
         每服务初始 2 MiB 原路径辅助流量（收发合计，代理出口未知也扣额度）；用尽会阻止辅助请求，可能导致登录/取下载链接失败。可点击卡片额度旁“补充”，确认后增加 2 MiB，不会自动增加或放开内容 IPv4。清零或切换开关不会恢复额度。这是中继字节保护，不是校园网计费保证；HTTPS 无法按文件大小准确分流。
         默认仅开启五项内容服务，“其他网站”保持关闭、恢复原网络。主动全部开启会连普通网站也限制 IPv6。
 
         流量
-        各服务显示 IPv4 / IPv6 / 未知的累计下载和当前下载速度，顶部另有上传统计。关闭开关仍保留累计流量。关闭后的被动监测仅覆盖夸克、Steam、Epic 原生进程的公网连接，不覆盖浏览器/AList；经 TUN/代理不能确认最终出口时标记未知。不等于整机或运营商账单。
+        各服务显示 IPv4 / IPv6 / 未知的累计下载和当前下载速度，顶部另有上传统计。关闭接管仍继续监测。夸克、Steam、Epic 原生进程按进程归属；浏览器与本机 AList 按本进程近期 DNS 结果关联，未识别的部分明确提示，不把全部浏览器或 AList 流量算作同一服务。本机播放器到 AList 不重复计量。共享 IP、加密 DNS、本机代理等可能导致漏计；经 TUN 无法确认最终出口时标记未知。不等于整机或运营商账单。
 
         有线 / Wi-Fi 分流
         默认关闭。完整分流：直连走有线，代理节点走 Wi-Fi，关闭或退出时恢复；异常退出由恢复进程处理。
@@ -604,7 +634,7 @@ internal sealed partial class DownloadForm : Form
         protectionLost = router?.ProtectionLost, nativeCapture = native?.Active ?? false, network = network.Text,
         nativeExitCode = native?.ExitCode, routerHealth = router?.Health(),
         runtimeHistory = router?.RuntimeHistory(),
-        scope = "Enabled: relay stream bytes. Mixed allows only exact auxiliary hosts with an initial shared per-service 2 MiB non-IPv6/original-proxy allowance; additional 2 MiB grants require explicit user confirmation. All content/unknown hosts remain IPv6-only. Other websites default to original path. Disabled: passive native Quark/Steam/Epic public flows only, no browser/AList coverage. TUN/proxy exit is unknown. Not campus billing.",
+        scope = "Enabled: relay stream bytes. Mixed permits only exact auxiliary hosts with a shared per-service 2 MiB allowance; grants require confirmation. All content/unknown hosts remain IPv6-only, including when local IPv6 is unavailable. Disabling restores the possibly paid original path. Disabled: passive native process public bytes or same-process recent DNS correlation for browser/AList; incomplete under encrypted DNS, shared IPs and local proxies. Loopback AList is excluded. TUN/proxy exit is unknown. Not campus billing.",
         recentRoutes=router?.RecentRoutes(),
         passiveStatus=passive?.Status,passiveLostEvents=passive?.Lost,
         services = counters.Select(p => new

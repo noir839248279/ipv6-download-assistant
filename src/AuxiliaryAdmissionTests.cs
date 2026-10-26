@@ -110,13 +110,13 @@ internal static class AuxiliaryAdmissionTests
                     try
                     {
                         for (int i = 0; i < 3; i++)
-                            Check((await Tunnel("api.bilibili.com")).StartsWith("HTTP/1.1 502"), "Records upstream failure " + (i + 1));
-                        Check((await Tunnel("api.bilibili.com")).StartsWith("HTTP/1.1 503") && attempts == 3,
+                            Check((await Tunnel("youtubei.googleapis.com")).StartsWith("HTTP/1.1 502"), "Records upstream failure " + (i + 1));
+                        Check((await Tunnel("youtubei.googleapis.com")).StartsWith("HTTP/1.1 503") && attempts == 3,
                             "Repeated failed upstream connections cool down without more proxy attempts");
                         Check(await http.GetStringAsync($"http://other.bilivideo.com:{port}/") == "ok",
                             "Auxiliary cooldown does not alter content IPv6 routing");
-                        router.Enable("bilibili", false);
-                        Check((await Tunnel("api.bilibili.com")).StartsWith("HTTP/1.1 502") && attempts == 4,
+                        router.Enable("youtube", false);
+                        Check((await Tunnel("youtubei.googleapis.com")).StartsWith("HTTP/1.1 502") && attempts == 4,
                             "Disabled service is not retained in auxiliary cooldown");
                     }
                     finally { stop.Cancel(); await rejecting; }

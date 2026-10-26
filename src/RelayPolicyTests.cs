@@ -139,10 +139,10 @@ internal static class RelayPolicyTests
                     Interlocked.Increment(ref contentQueries);
                     return Task.FromResult(new[] { IPAddress.IPv6Loopback });
                 };
-                router.OriginalResolve = _ =>
+                router.OriginalResolve = host =>
                 {
                     Interlocked.Increment(ref originalQueries);
-                    return Task.FromResult(new[] { IPAddress.Loopback });
+                    return Task.FromResult(host=="ordinary.example"?Array.Empty<IPAddress>():new[] { IPAddress.Loopback });
                 };
                 router.Enable("global", true);
                 router.SetMode("quark",ServiceMode.Mixed);

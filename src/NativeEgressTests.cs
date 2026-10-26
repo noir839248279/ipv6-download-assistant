@@ -151,7 +151,7 @@ internal static class NativeEgressTests
             };
             string originRule = config["rules"]![0]!.GetValue<string>();
             config["rules"] = new JsonArray(originRule,
-                "DOMAIN,egress-test.invalid,DIRECT", "DOMAIN,test.bilivideo.com,BrowserRelay", "MATCH,REJECT");
+                "DOMAIN,egress-test.invalid,DIRECT", "DOMAIN,test.bilivideo.com,BilibiliRelay", "MATCH,REJECT");
             string configPath = Path.Combine(folder, "config.json");
             File.WriteAllText(configPath, config.ToJsonString());
             var start = new ProcessStartInfo(NativeCapture.CorePath)
@@ -209,8 +209,8 @@ internal static class NativeEgressTests
                 "Explicit IPv4 destinations remain usable for disabled-service routing");
             Check(config["sniffer"]!["enable"]!.GetValue<bool>(),
                 "Domain sniffing remains enabled for native application classification");
-            Check(config["sniffer"]!["override-destination"]!.GetValue<bool>(),
-                "Sniffed hostname remains available to the HTTP content relay");
+            Check(!config["sniffer"]!["override-destination"]!.GetValue<bool>(),
+                "Sniffed hostname classifies content without rewriting disabled original destinations");
             Check((await Request("[::1]", "test.bilivideo.com")).EndsWith("\r\n\r\nIPv6") &&
                 router.Counters["bilibili"].V6 > 0 && router.Counters["bilibili"].V4 == 0 &&
                 router.Counters["global"].V6 == 0,

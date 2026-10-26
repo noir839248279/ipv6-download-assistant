@@ -288,7 +288,7 @@ internal sealed class SplitTile : DashboardSurface
 internal sealed class ServiceTile : DashboardSurface
 {
     internal readonly DashboardToggle Toggle;
-    internal readonly ComboBox ModeSelect = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    internal readonly DashboardToggle MixedToggle = new() { Checked = true };
     internal readonly LinkLabel Allowance = new() { AutoSize=false, TextAlign=ContentAlignment.MiddleLeft };
     internal ServiceMode Mode;
     internal readonly string Id;
@@ -315,10 +315,9 @@ internal sealed class ServiceTile : DashboardSurface
             _ => ("其他网站", "◎", Color.FromArgb(53, 184, 167))
         };
         Toggle = new DashboardToggle { AccessibleName = title + " IPv6 接管" };
-        ModeSelect.Items.AddRange(new object[] { "混合保护", "严格 IPv6" });
-        ModeSelect.SelectedIndex = 0;
-        ModeSelect.AccessibleName = title + "连接模式";
-        Controls.Add(ModeSelect);
+        MixedToggle.AccessibleName = title + "混合模式：仅辅助请求允许限额 IPv4";
+        MixedToggle.Visible = id != "global";
+        Controls.Add(MixedToggle);
         Allowance.AccessibleName=title+"辅助流量额度";
         Controls.Add(Allowance);
         Controls.Add(Toggle); AccessibleName = title;
@@ -328,8 +327,8 @@ internal sealed class ServiceTile : DashboardSurface
         base.OnResize(e);
         Toggle.SetBounds(Width - (int)(66 * ScaleFactor), (int)(16 * ScaleFactor),
             (int)(46 * ScaleFactor), (int)(28 * ScaleFactor));
-        ModeSelect.SetBounds((int)(20 * ScaleFactor), (int)(69 * ScaleFactor),
-            (int)(126 * ScaleFactor), (int)(28 * ScaleFactor));
+        MixedToggle.SetBounds((int)(100 * ScaleFactor), (int)(68 * ScaleFactor),
+            (int)(46 * ScaleFactor), (int)(28 * ScaleFactor));
         Allowance.SetBounds((int)(20 * ScaleFactor),(int)(261 * ScaleFactor),
             Math.Max(0,Width-(int)(40*ScaleFactor)),(int)(23*ScaleFactor));
     }
@@ -340,6 +339,9 @@ internal sealed class ServiceTile : DashboardSurface
         UploadRate = counter.UploadRate4 + counter.UploadRate6 + counter.UploadRateProxy;
         ProtectionLost = lost && counter.Enabled;
         Mode = counter.Mode;
+        MixedToggle.AccessibleDescription = counter.Mode == ServiceMode.Mixed
+            ? "已开启：明确辅助请求可使用限额 IPv4；视频和下载仍仅 IPv6"
+            : "已关闭：严格 IPv6，辅助请求也不使用 IPv4";
         Rates[0]=counter.Rate6;Rates[1]=counter.Rate4;Rates[2]=counter.RateProxy;
         long auxiliaryUsed=counter.Auxiliary.Used;
         allowanceExhausted=auxiliaryUsed>=counter.Auxiliary.Capacity;
@@ -372,7 +374,15 @@ internal sealed class ServiceTile : DashboardSurface
         TextAt(g, title, new(64, 15, w - 140, 25), 14, bold: true);
         TextAt(g, Server, new(64, 40, w - 84, 21), 10.5f, DashboardTheme.Muted);
         string rate = TrafficStore.Bytes(DownloadRate) + "/s";
-        TextAt(g, !Toggle.Checked?"已关闭":Mode==ServiceMode.Mixed?"内容仅 IPv6":"全部仅 IPv6", new(158, 68, w - 178, 28), 10, DashboardTheme.V6);
+        if (Id == "global")
+            TextAt(g, "普通网站仅 IPv6（可选）", new(20, 68, w - 40, 28), 11, DashboardTheme.Muted);
+        else
+        {
+            TextAt(g, "混合模式", new(20, 68, 78, 28), 12, bold: true);
+            TextAt(g, Mode == ServiceMode.Mixed ? "辅助可 IPv4" : "严格 IPv6",
+                new(156, 68, w - 176, 28), 11,
+                Mode == ServiceMode.Mixed ? DashboardTheme.Unknown : DashboardTheme.V6);
+        }
         TextAt(g, rate, new(18, 110, w - 128, 32), 23, bold: true);
         TextAt(g, Percent.ToString("F1") + "% IPv6", new(w - 116, 115, 98, 25),
             11, DashboardTheme.V6, true, StringAlignment.Far);
@@ -403,7 +413,7 @@ internal sealed class ServiceTile : DashboardSurface
         g.DrawLine(rule, 20, h - 42, w - 20, h - 42);
         Dot(g, 23, h - 22, ProtectionLost ? DashboardTheme.Error : Toggle.Checked ? DashboardTheme.V6 : DashboardTheme.Muted, 3);
         TextAt(g, State, new(34, h - 36, w - 148, 28), 11, ProtectionLost ? DashboardTheme.Error : DashboardTheme.Muted);
-        string policy = ProtectionLost ? "接管失效" : !Toggle.Checked ? "原连接方式" : Mode==ServiceMode.Mixed ? "混合保护" : "严格 IPv6";
+        string policy = ProtectionLost ? "接管失效" : !Toggle.Checked ? "原路径监测" : Mode==ServiceMode.Mixed ? "内容仅 IPv6" : "严格 IPv6";
         Color color = ProtectionLost ? DashboardTheme.Error : !Toggle.Checked ? DashboardTheme.Muted :
             Mode == ServiceMode.Mixed ? DashboardTheme.Unknown : DashboardTheme.V6;
         FillRound(g, new(w - 106, h - 33, 86, 23), Color.FromArgb(24, color), 4);

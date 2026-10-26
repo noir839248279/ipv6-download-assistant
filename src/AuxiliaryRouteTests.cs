@@ -113,8 +113,16 @@ internal static class AuxiliaryRouteTests
                         "Content failure does not silently spend IPv4");
                     Check(!DownloadRouter.DirectAuxiliaryHost("sub.px.wpk.quark.cn") &&
                         !DownloadRouter.DirectAuxiliaryHost("px.wpk.quark.cn.example") &&
-                        !DownloadRouter.DirectAuxiliaryHost("drive-pc.quark.cn"),
-                        "Direct exception is exact-host only, not all Quark APIs or suffix lookalikes");
+                        DownloadRouter.DirectAuxiliaryHost("drive-pc.quark.cn") &&
+                        !DownloadRouter.DirectAuxiliaryHost("dl-example.quark.cn"),
+                        "Only listed domestic auxiliary hosts use direct egress, never suffix lookalikes or content");
+                    router.Enable("bilibili", true); router.SetMode("bilibili", ServiceMode.Mixed);
+                    router.OriginalResolve = _ => Task.FromResult(new[] { IPAddress.IPv6Loopback, IPAddress.Loopback });
+                    long allowance = router.Counters["bilibili"].Auxiliary.Used;
+                    Check(await Ok("www.bilibili.com") && router.Counters["bilibili"].V6 > 0 &&
+                        router.Counters["bilibili"].V4 == 0 && router.Counters["bilibili"].Auxiliary.Used == allowance && proxyCalls == 0,
+                        "Domestic auxiliary prefers actual IPv6 without proxy recursion or IPv4 allowance usage");
+                    router.OriginalResolve = _ => { Interlocked.Increment(ref dnsCalls); return Task.FromResult(new[] { IPAddress.Loopback }); };
                     while (row.Auxiliary.Used < row.Auxiliary.Capacity) row.Auxiliary.Reserve(65536);
                     Check(!await Ok("px.wpk.quark.cn") && dnsCalls == directQueries,
                         "Exhausted allowance cannot open another IPv4 connection");

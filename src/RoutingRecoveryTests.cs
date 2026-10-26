@@ -210,9 +210,10 @@ internal static class RoutingRecoveryTests
         readonly UdpClient socket = new(new IPEndPoint(IPAddress.Loopback, 0));
         readonly CancellationTokenSource stop = new();
         readonly Task serving;
+        readonly IPAddress answer;
         internal int Port => ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
         internal int Queries;
-        internal FixtureDns() { serving = Serve(); }
+        internal FixtureDns(IPAddress? address = null) { answer=address??IPAddress.Loopback; serving = Serve(); }
         async Task Serve()
         {
             try
@@ -239,7 +240,7 @@ internal static class RoutingRecoveryTests
                         BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(end + 4, 2), 1);
                         BinaryPrimitives.WriteUInt32BigEndian(reply.AsSpan(end + 6, 4), 60);
                         BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(end + 10, 2), 4);
-                        IPAddress.Loopback.GetAddressBytes().CopyTo(reply, end + 12);
+                        answer.GetAddressBytes().CopyTo(reply, end + 12);
                     }
                     await socket.SendAsync(reply, request.RemoteEndPoint, stop.Token);
                 }
