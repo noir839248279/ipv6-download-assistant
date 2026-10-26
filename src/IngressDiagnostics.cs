@@ -14,6 +14,7 @@ internal sealed class IngressDiagnostics : IDisposable
     readonly int port;
     readonly string path, directory;
     readonly Func<object> snapshot;
+    readonly Action? sampleRuntime;
     readonly TimeSpan interval;
     readonly ManualResetEvent stopping = new(false);
     readonly Thread worker;
@@ -22,9 +23,10 @@ internal sealed class IngressDiagnostics : IDisposable
     int failures;
     DateTime lastSaved = DateTime.MinValue;
 
-    internal IngressDiagnostics(int port, string path, Func<object> snapshot, string directory, TimeSpan? interval = null)
+    internal IngressDiagnostics(int port, string path, Func<object> snapshot, string directory, TimeSpan? interval = null, Action? sampleRuntime = null)
     {
         this.port = port; this.path = path; this.snapshot = snapshot; this.directory = directory;
+        this.sampleRuntime = sampleRuntime;
         this.interval = interval ?? TimeSpan.FromSeconds(10);
         worker = new Thread(Run) { IsBackground = true, Name = "IPv6Lens ingress diagnostics" };
     }
@@ -37,6 +39,8 @@ internal sealed class IngressDiagnostics : IDisposable
     {
         while (!stopping.WaitOne(interval))
         {
+            try { sampleRuntime?.Invoke(); }
+            catch (Exception ex) { ReportError = ex.GetType().Name; }
             try { Observe(Probe(port, path)); }
             catch (Exception ex) { ReportError = ex.GetType().Name; }
         }

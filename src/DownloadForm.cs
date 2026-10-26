@@ -4,7 +4,7 @@ namespace IPv6Lens;
 
 internal sealed partial class DownloadForm : Form
 {
-    const string Version = "3.3.2";
+    static readonly string Version = typeof(DownloadForm).Assembly.GetName().Version?.ToString(3) ?? "unknown";
     DownloadRouter? router;
     NativeCapture? native;
     readonly Dictionary<string,DownloadCounter> counters = DownloadRouter.Sites.ToDictionary(s=>s.Id,_=>new DownloadCounter { Mode=ServiceMode.Mixed });
@@ -20,6 +20,10 @@ internal sealed partial class DownloadForm : Form
     readonly Label network = MakeLabel("正在检测 IPv4 / IPv6 网络连接…", 9);
     readonly Label hint = MakeLabel("正在启动下载接管…", 9);
     readonly Label coverage = MakeLabel("旁路统计：仅识别夸克 / Steam / Epic 原生进程；浏览器、AList、代理不完整。", 9);
+    readonly LinkLabel diagnosticStatus = new() { Text = "诊断：点击打开报告目录",
+        AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, LinkBehavior = LinkBehavior.HoverUnderline };
+    static string ReportsDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IPv6Lens", "reports");
+    string? lastSavedReport, reportWriteError, seenRuntimeReport, seenIngressReport;
     readonly Label sectionTitle = MakeLabel("服务监控", 12, true);
     readonly Label serviceCount = MakeLabel("0 / 6 已开启", 9);
     readonly Label masterText = MakeLabel("全部关闭", 9, true);
@@ -54,7 +58,7 @@ internal sealed partial class DownloadForm : Form
         appIcon.Image = Icon?.ToBitmap();
         Controls.Add(viewport); viewport.Controls.Add(canvas);
         canvas.Controls.AddRange(new Control[] { appIcon, title, version, network, split, share,
-            sectionTitle, serviceCount, masterText, master, hint, coverage });
+            sectionTitle, serviceCount, masterText, master, hint, coverage, diagnosticStatus });
         canvas.Controls.AddRange(summaries);
         void Action(string text, string description, Action run, int width = 96)
         {
@@ -70,8 +74,18 @@ internal sealed partial class DownloadForm : Form
             using var nodes = new NodeForm(router.Nodes, router.ContentHosts()); nodes.ShowDialog(this);
         });
         Action("导出报告", "导出脱敏 JSON 诊断报告", Export);
+        Action("记录卡顿", "保存当前现场和近期采样，不测速、不换节点", RecordSlowdown);
         Action("清零流量", "清零累计流量和趋势", ResetTraffic);
         Action("◐", "切换深色 / 浅色主题", () => { DashboardTheme.Light = !DashboardTheme.Light; ApplyTheme(); }, 36);
+        diagnosticStatus.LinkClicked += (_, _) =>
+        {
+            try
+            {
+                Directory.CreateDirectory(ReportsDirectory);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ReportsDirectory) { UseShellExecute = true });
+            }
+            catch (Exception ex) { hint.Text = "打开报告目录失败：" + ex.GetType().Name; }
+        };
         tooltips.SetToolTip(master, "全部开启 / 全部关闭");
         tooltips.SetToolTip(split.Toggle, "开启分流或恢复原网络设置");
         foreach (string id in new[] { "quark", "bilibili", "steam", "epic", "youtube", "global" })
@@ -175,7 +189,8 @@ internal sealed partial class DownloadForm : Form
         Place(appIcon, left, 22, 42, 42);
         Place(title, left + 54, 17, 202, 31);
         Place(version, left + 260, 22, 62, 23);
-        Place(network, left + 54, 51, compact ? inner - 58 : inner - 540, 23);
+        Place(network, left + 54, 51, compact ? inner - 58 :
+            Math.Max(100, w - 24 - actions.Sum(b => (int)b.Tag! + 6) - left - 66), 23);
         float actionX = compact ? left : w - 24 - actions.Sum(b => (int)b.Tag! + 6) + 6;
         float actionY = compact ? 88 : 29;
         foreach (var button in actions)
@@ -218,8 +233,9 @@ internal sealed partial class DownloadForm : Form
         }
         y += ((cards.Count + columns - 1) / columns) * 344;
         Place(coverage, left, y, inner, 30);
-        Place(hint, left, y + 30, inner, 34);
-        canvas.Height = Px(y + 82);
+        Place(diagnosticStatus, left, y + 30, inner, 30);
+        Place(hint, left, y + 60, inner, 34);
+        canvas.Height = Px(y + 112);
     }
 
     static Label MakeLabel(string text, float size, bool bold = false) => new()
@@ -236,6 +252,7 @@ internal sealed partial class DownloadForm : Form
             label.ForeColor = label == title || label == sectionTitle ? DashboardTheme.Text : DashboardTheme.Muted;
         }
         version.ForeColor = DashboardTheme.V6;
+        diagnosticStatus.LinkColor = diagnosticStatus.ActiveLinkColor = DashboardTheme.V6;
         foreach (var button in actions) button.RefreshTheme();
         foreach (var tile in cards.Values) tile.RefreshAllowanceTheme();
         if (router?.ProtectionLost == true) hint.ForeColor = DashboardTheme.Error;
@@ -299,6 +316,19 @@ internal sealed partial class DownloadForm : Form
         }
         for (int i = 0; i < 3; i++) summaries[i].Update(rates[i], uploadRates[i], totals[i], uploaded[i], sample);
         share.Update(totals[0], totals[1], totals[2]); SyncMaster();
+        var reportStatus = router?.RuntimeReportStatus;
+        if (reportStatus?.LastReport is string runtimeFile && runtimeFile != seenRuntimeReport)
+            lastSavedReport = seenRuntimeReport = runtimeFile;
+        if (router?.IngressReportFile is string ingressFile && ingressFile != seenIngressReport)
+            lastSavedReport = seenIngressReport = ingressFile;
+        string? diagnosticError = reportStatus?.Error ?? router?.IngressReportError ?? reportWriteError;
+        diagnosticStatus.Text = diagnosticError != null ? "诊断保存失败：" + diagnosticError + " · 点击打开目录" :
+            reportStatus?.ManualPending == true ? "正在记录卡顿现场（下一次后台采样，约 10 秒内）…" :
+            lastSavedReport != null ? "诊断已保存：" + lastSavedReport + " · 点击打开目录" :
+            router == null ? "诊断：接管已关闭 · 点击打开报告目录" :
+            "诊断：后台记录运行中 · 点击打开报告目录";
+        diagnosticStatus.LinkColor = diagnosticError == null ? DashboardTheme.V6 : DashboardTheme.Error;
+        tooltips.SetToolTip(diagnosticStatus, ReportsDirectory + "\n" + (reportStatus?.Trigger ?? "低速疑似 / 连续失败 / 内核高 CPU；不会改变网络路径"));
         if(passive!=null)coverage.Text=(passive.Status.StartsWith("正在采集")?"旁路监测运行中":"旁路监测不可用（见提示）")+
             " · 仅夸克 / Steam / Epic 原生进程；不含浏览器 / AList，TUN 出口未知";
         tooltips.SetToolTip(coverage, (passive?.Status ?? "旁路监测未启动") + "；丢失事件 " + (passive?.Lost ?? 0) +
@@ -491,7 +521,7 @@ internal sealed partial class DownloadForm : Form
         foreach(var pair in counters)router.Counters[pair.Key]=pair.Value;
         await router.Start(!testMode);
         foreach (var pair in router.Counters) router.Enable(pair.Key, selected == null ? includeOther||pair.Key!="global" : pair.Key == selected);
-        if (!testMode) { native = new NativeCapture(); await native.Start(router); }
+        if (!testMode) { native = new NativeCapture(); router.CoreProcessId = () => native?.ProcessId; await native.Start(router); }
     }
     async Task StopRouting()
     {
@@ -566,12 +596,14 @@ internal sealed partial class DownloadForm : Form
 
         退出与诊断
         退出前暂停下载。详细诊断可查看连接；导出报告包含平台 CDN 域名、流量与接管状态，不记录 URL、Cookie、Token 或文件名。
+        自动记录内核高 CPU、连续失败和低速疑似现场；低速记录不能区分正常暂停/缓冲。卡顿时可直接点“记录卡顿”，约 10 秒后在底部查看保存结果，点击可打开报告目录。不需要下载链接，不测速、不切换节点。
         """;
     object Report() => new
     {
         schema = "ipv6-download-assistant/3", version = Version, timeUtc = DateTime.UtcNow,
         protectionLost = router?.ProtectionLost, nativeCapture = native?.Active ?? false, network = network.Text,
         nativeExitCode = native?.ExitCode, routerHealth = router?.Health(),
+        runtimeHistory = router?.RuntimeHistory(),
         scope = "Enabled: relay stream bytes. Mixed allows only exact auxiliary hosts with an initial shared per-service 2 MiB non-IPv6/original-proxy allowance; additional 2 MiB grants require explicit user confirmation. All content/unknown hosts remain IPv6-only. Other websites default to original path. Disabled: passive native Quark/Steam/Epic public flows only, no browser/AList coverage. TUN/proxy exit is unknown. Not campus billing.",
         recentRoutes=router?.RecentRoutes(),
         passiveStatus=passive?.Status,passiveLostEvents=passive?.Lost,
@@ -595,11 +627,30 @@ internal sealed partial class DownloadForm : Form
         if (testMode || router == null) return;
         try
         {
-            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IPv6Lens", "reports");
-            Directory.CreateDirectory(dir);
-            WriteReport(Path.Combine(dir, DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json"));
+            lastSavedReport = DiagnosticReportStore.Write(ReportsDirectory, "automatic", Report());
+            reportWriteError = null;
         }
-        catch { }
+        catch (Exception ex) { reportWriteError = ex.GetType().Name; diagnosticStatus.Text = "诊断保存失败：" + reportWriteError; }
+    }
+    void RecordSlowdown()
+    {
+        if (router != null)
+        {
+            router.RequestSlowReport();
+            hint.Text = "已标记卡顿，后台正在记录；无需测速或提供链接";
+            RefreshCards(false);
+        }
+        else
+        {
+            try
+            {
+                lastSavedReport = DiagnosticReportStore.Write(ReportsDirectory, "automatic",
+                    new { trigger = "user_reported_slowdown_without_capture", report = Report() });
+                reportWriteError = null;
+                diagnosticStatus.Text = "诊断已保存：" + lastSavedReport + " · 点击打开目录";
+            }
+            catch (Exception ex) { reportWriteError = ex.GetType().Name; diagnosticStatus.Text = "诊断保存失败：" + reportWriteError; }
+        }
     }
     void Export()
     {

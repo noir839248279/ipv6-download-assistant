@@ -27,6 +27,7 @@ internal sealed class DownloadCounter
     internal volatile ServiceMode Mode = ServiceMode.Strict;
     internal readonly AuxiliaryBudget Auxiliary = new();
     public long Failures;
+    internal long ContentStarted,ContentReceived;
     public volatile DownloadFailure? LastFailure;
     internal string ShareText {get{long a=Interlocked.Read(ref V4),b=Interlocked.Read(ref V6),u=Interlocked.Read(ref Proxy);double total=(double)a+b+u;return total==0?"暂无流量":(u>0?"已确认 IPv6 ":"IPv6 ")+(100d*b/total).ToString("F1",System.Globalization.CultureInfo.InvariantCulture)+"%";}}
 }
@@ -73,6 +74,21 @@ internal sealed class DownloadRouter : IAsyncDisposable
     int workId;long handlerErrors;string? lastHandlerError;
     internal readonly string DiagnosticPath="/"+Guid.NewGuid().ToString("N")+"/ingress";
     IngressDiagnostics? ingressDiagnostics;
+    RuntimeDiagnostics? runtimeDiagnostics;
+    readonly CoreProcessSampler coreSampler=new();
+    internal Func<int?> CoreProcessId=()=>null;
+    internal RuntimeDiagnostics.ReportStatus? RuntimeReportStatus=>runtimeDiagnostics?.Status;
+    internal string? IngressReportFile=>ingressDiagnostics?.LastReport;
+    internal string? IngressReportError=>ingressDiagnostics?.ReportError;
+    internal RuntimeDiagnostics.Observation[]? RuntimeHistory()=>runtimeDiagnostics?.History();
+    internal void RequestSlowReport()=>runtimeDiagnostics?.RequestManual();
+    internal RuntimeDiagnostics.Sample RuntimeSample()=>new(DateTime.UtcNow,coreSampler.Sample(CoreProcessId()),
+        Counters.Select(p=>new RuntimeDiagnostics.ServiceSample(p.Key,p.Value.Enabled,Interlocked.Read(ref p.Value.V4),
+            Interlocked.Read(ref p.Value.V6),Interlocked.Read(ref p.Value.Proxy),
+            Interlocked.Read(ref p.Value.Upload4)+Interlocked.Read(ref p.Value.Upload6)+Interlocked.Read(ref p.Value.UploadProxy),
+            Interlocked.Read(ref p.Value.Failures),
+            pendingWork.Values.Count(w=>w.Site==p.Key&&w.Host!=null&&ContentSite(w.Host)==p.Key&&w.Current.Stage=="transfer"),
+            Interlocked.Read(ref p.Value.ContentStarted),Interlocked.Read(ref p.Value.ContentReceived))).ToArray());
     internal Func<TcpListener,CancellationToken,ValueTask<TcpClient>> AcceptClient=(l,ct)=>l.AcceptTcpClientAsync(ct);
     readonly List<TcpListener> nativeListeners=new();
     readonly ConcurrentDictionary<string,DownloadCounter> servers=new();
@@ -124,7 +140,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         work=pendingWork.Values.Select(p=>new{p.Listener,p.Site,p.Host,Step=p.Current}).GroupBy(p=>new{p.Listener,p.Site,p.Host,p.Step.Stage})
             .Select(g=>new{listener=g.Key.Listener,site=g.Key.Site,host=g.Key.Host,stage=g.Key.Stage,count=g.Count(),oldestSeconds=Math.Max(0,(DateTime.UtcNow-g.Min(p=>p.Step.SinceUtc)).TotalSeconds)}).ToArray(),
         auxiliaryAdmission=auxiliaryAdmission.Snapshot(),
-        ingress=ingressDiagnostics?.Status()};
+        ingress=ingressDiagnostics?.Status(),runtimeDiagnostics=RuntimeReportStatus};
     internal object IngressSnapshot()=>new{health=Health(),recentRoutes=RecentRoutes(),
         services=Counters.Select(p=>new{id=p.Key,enabled=p.Value.Enabled,mode=p.Value.Mode.ToString(),
             ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy),
@@ -174,7 +190,9 @@ internal sealed class DownloadRouter : IAsyncDisposable
         web.MapGet(path,(HttpContext c)=>{c.Response.Headers.CacheControl="no-store, no-cache, must-revalidate";return Results.Text(Pac(),"application/x-ns-proxy-autoconfig");});
         await web.StartAsync();pacBaseUrl=web.Urls.Single()+path;
         if(system){
-            ingressDiagnostics=new(Port,DiagnosticPath,IngressSnapshot,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","reports"));
+            string reports=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","reports");
+            runtimeDiagnostics=new(reports,IngressSnapshot);
+            ingressDiagnostics=new(Port,DiagnosticPath,IngressSnapshot,reports,sampleRuntime:()=>runtimeDiagnostics.Observe(RuntimeSample()));
             ingressDiagnostics.Start();
         }
     }
@@ -435,8 +453,10 @@ internal sealed class DownloadRouter : IAsyncDisposable
             DownloadCounter? server=null;if(site!="global"&&servers.Count<2000){server=servers.GetOrAdd(host,_=>new());serverSites[host]=site;}
             stage="transfer";
             work.At("transfer");
+            bool content=ContentSite(host)==site;
+            if(content)Interlocked.Increment(ref row.ContentStarted);
             responseStarted=true;
-            await Relay(input,output,client.Client,upstream.Client,row,v6,connected.Proxy,lifetime.Token,server);
+            await Relay(input,output,client.Client,upstream.Client,row,v6,connected.Proxy,lifetime.Token,server,content:content);
         }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException or TimeoutException or ObjectDisposedException or HttpRequestException or System.Text.Json.JsonException){
             if(session.IntentionalClose||stop.IsCancellationRequested)return;
             if(originalControl&&!auxiliaryV6Only&&!upstreamEstablished&&!ProtectionLost)admission?.ConnectFailed();
@@ -450,13 +470,13 @@ internal sealed class DownloadRouter : IAsyncDisposable
         }
         finally{sessions.TryRemove(id,out _);}
     }
-    internal static async Task Relay(Stream input,Stream output,Socket client,Socket upstream,DownloadCounter row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,TimeSpan? halfCloseIdle=null){
+    internal static async Task Relay(Stream input,Stream output,Socket client,Socket upstream,DownloadCounter row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,TimeSpan? halfCloseIdle=null,bool content=false){
         using var idle=new CancellationTokenSource();
         using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var transfer=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token,idle.Token);
         var allowance=halfCloseIdle??TimeSpan.FromSeconds(30);int halfClosed=0;
         void Progress(){if(Volatile.Read(ref halfClosed)!=0)idle.CancelAfter(allowance);}
-        var up=Pump(input,output,row,v6,proxy,transfer.Token,server,true,Progress);var down=Pump(output,input,row,v6,proxy,transfer.Token,server,false,Progress);
+        var up=Pump(input,output,row,v6,proxy,transfer.Token,server,true,Progress);var down=Pump(output,input,row,v6,proxy,transfer.Token,server,false,Progress,content);
         try{
             var first=await Task.WhenAny(up,down);
             if(up.IsFaulted)await up;
@@ -473,7 +493,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
             try{await Task.WhenAll(up,down);}catch{} // Observe sibling cancellation, not the primary failure.
         }
     }
-    static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,bool upload=false,Action? progress=null){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(upload)CountUpload(c,n,v6,proxy);else if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);progress?.Invoke();}}
+    static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,bool upload=false,Action? progress=null,bool content=false){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(upload)CountUpload(c,n,v6,proxy);else if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);if(content&&row!=null)Interlocked.Add(ref row.ContentReceived,n);progress?.Invoke();}}
     static void CountUpload(DownloadCounter c,int n,bool v6,bool proxy){if(proxy)Interlocked.Add(ref c.UploadProxy,n);else if(v6)Interlocked.Add(ref c.Upload6,n);else Interlocked.Add(ref c.Upload4,n);}
     public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;SampleCounters(Counters.Values,seconds);foreach(var row in Counters.Values)if(ProtectionLost&&row.Enabled)row.State="代理设置失效：未受保护，请暂停下载";}
     internal static void SampleCounters(IEnumerable<DownloadCounter> counters,double seconds){foreach(var row in counters){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;long x=Interlocked.Read(ref row.Upload4),y=Interlocked.Read(ref row.Upload6),z=Interlocked.Read(ref row.UploadProxy);row.UploadRate4=Math.Max(0,x-row.LastUpload4)/seconds;row.UploadRate6=Math.Max(0,y-row.LastUpload6)/seconds;row.UploadRateProxy=Math.Max(0,z-row.LastUploadProxy)/seconds;row.LastUpload4=x;row.LastUpload6=y;row.LastUploadProxy=z;}}

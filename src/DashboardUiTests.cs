@@ -26,6 +26,9 @@ internal sealed partial class DownloadForm
             "Startup protects five services and leaves unrelated websites on original path");
         Check(cards["global"].Allowance.LinkArea.Length==0,"Other websites has no misleading auxiliary allowance link");
         Check(!SplitActive, "Split routing defaults to off independently of services");
+        Check(actions.Any(a => a.Text == "记录卡顿") && diagnosticStatus.Parent == canvas &&
+            version.Text == "v" + typeof(DownloadForm).Assembly.GetName().Version!.ToString(3),
+            "Slowdown recording and report status are visible and version follows the assembly");
         Check(counters.Values.All(r=>r.Mode==ServiceMode.Mixed),"All service mode selectors default to protected mixed");
         Check(router!.Pac().Contains("return url.substring(0,6)==='https:'?"),
             "Disabled other-websites policy keeps original PAC path");
@@ -92,6 +95,7 @@ internal sealed partial class DownloadForm
         clashBusy = false; SetControlsEnabled();
         var layoutSamples = new List<object>();
         bool contentBounded = true;
+        bool actionsBounded = true;
         foreach (int width in new[] { 1280, 920, 560, 1280, 920, 1280 })
         {
             ClientSize = new(Px(width), Px(850)); LayoutDashboard();
@@ -106,10 +110,14 @@ internal sealed partial class DownloadForm
                 Math.Abs(extent - Math.Max(canvas.Height, viewport.ClientSize.Height)) <= Px(2) &&
                 canvas.Bottom >= Math.Min(canvas.Height, viewport.ClientSize.Height) - Px(2) &&
                 !viewport.HorizontalScroll.Visible;
+            actionsBounded &= actions.All(a => a.Left >= 0 && a.Right <= canvas.Width &&
+                !a.Bounds.IntersectsWith(title.Bounds) && !a.Bounds.IntersectsWith(network.Bounds)) &&
+                diagnosticStatus.Top >= coverage.Bottom && hint.Top >= diagnosticStatus.Bottom;
         }
         File.WriteAllText(prefix + ".layout.json", JsonSerializer.Serialize(layoutSamples,
             new JsonSerializerOptions { WriteIndented = true, IncludeFields = true }));
         Check(contentBounded, "Repeated resize and bottom scrolling keep content extent within the footer");
+        Check(actionsBounded, "New action and diagnostic status do not overlap header, network or footer at all tested widths");
         DashboardTheme.Light = true; ApplyTheme();
         using (var bottom = new Bitmap(viewport.Width, viewport.Height))
         {

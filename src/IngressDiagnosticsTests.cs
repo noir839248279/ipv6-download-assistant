@@ -78,12 +78,18 @@ internal static class IngressDiagnosticsTests
                 router.Counters["quark"].Enabled && router.Counters["quark"].V6 == 15 &&
                 router.Counters["quark"].V4 == 0 && router.Counters["quark"].Proxy == 0,
                 "Probes and fault reports preserve active IPv6 transfers without IPv4 fallback");
+            var runtimeSample = router.RuntimeSample().Services.Single(s => s.Id == "quark");
+            Check(runtimeSample.ActiveContent == 1 && runtimeSample.ContentStarted == 1 &&
+                runtimeSample.ContentReceived == 15 && router.Counters["quark"].Last6 == 0,
+                "Runtime sampling sees real content progress without consuming the UI sampling clock");
 
             await using var stalled = new DownloadRouter();
             stalled.AcceptClient = async (l, ct) => { await Task.Delay(Timeout.Infinite, ct); return await l.AcceptTcpClientAsync(ct); };
             await stalled.Start(false);
             string stalledReports = Path.Combine(reports, "stalled");
-            using (var monitor = new IngressDiagnostics(stalled.Port, stalled.DiagnosticPath, stalled.IngressSnapshot, stalledReports, TimeSpan.FromMilliseconds(20)))
+            int runtimeSamples = 0;
+            using (var monitor = new IngressDiagnostics(stalled.Port, stalled.DiagnosticPath, stalled.IngressSnapshot,
+                stalledReports, TimeSpan.FromMilliseconds(20), () => Interlocked.Increment(ref runtimeSamples)))
             {
                 monitor.Start();
                 for (int i = 0; i < 70 && monitor.LastReport == null; i++) await Task.Delay(100, timeout.Token);
@@ -94,6 +100,7 @@ internal static class IngressDiagnosticsTests
                 Check(listener.GetProperty("accepted").GetInt64() == 0 &&
                     listener.GetProperty("taskStatus").GetString() != "Faulted",
                     "Report distinguishes an unfinished accept task from actual accept progress");
+                Check(Volatile.Read(ref runtimeSamples) >= 3, "Independent runtime sampling continues while local entry probes fail");
             }
             using var closed = new TcpListener(IPAddress.Loopback, 0);
             closed.Start(); int closedPort = ((IPEndPoint)closed.LocalEndpoint).Port; closed.Stop();

@@ -11,6 +11,7 @@ internal sealed class NativeCapture : IAsyncDisposable
     public string Status {get;private set;}="原生客户端接管未启动";
     public bool Active=>process!=null&&!process.HasExited;
     public int? ExitCode=>process!=null&&process.HasExited?process.ExitCode:null;
+    internal int? ProcessId {get{try{return process?.Id;}catch(InvalidOperationException){return null;}}}
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]static extern IntPtr CreateJobObject(IntPtr attributes,string? name);
     [DllImport("kernel32.dll")]static extern bool SetInformationJobObject(IntPtr job,int kind,IntPtr value,uint length);
     [DllImport("kernel32.dll")]static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);

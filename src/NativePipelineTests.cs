@@ -140,6 +140,9 @@ internal static class NativePipelineTests
                     Check(proxyConnections==2&&router.Counters["bilibili"].Proxy>0&&router.Counters["bilibili"].V4==0,
                         "Auxiliary HTTPS uses original proxy with unknown-exit accounting");
                     Check(router.Counters["bilibili"].V6>0,"Content HTTPS remains actual IPv6 without original-proxy fallback");
+                    Check(router.Counters["bilibili"].ContentStarted==1&&router.Counters["bilibili"].ContentReceived>0&&
+                        router.Counters["quark"].ContentStarted==0&&router.Counters["quark"].ContentReceived==0,
+                        "Diagnostic content progress excludes auxiliary HTTPS traffic");
                     Check(router.Counters["bilibili"].Failures==0,"No hidden relay failures in the complete local chain");
                 }
                 finally
