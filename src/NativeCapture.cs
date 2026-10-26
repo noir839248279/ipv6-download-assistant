@@ -17,6 +17,29 @@ internal sealed class NativeCapture : IAsyncDisposable
     [DllImport("kernel32.dll")]static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr value);
     internal static string CorePath=>Path.Combine(AppContext.BaseDirectory,"core","mihomo.exe");
+    internal const string RequiredCoreVersion="v1.19.10-ipv6lens.1";
+    internal static bool SupportedCore(string text){
+        string prefix="Mihomo Meta "+RequiredCoreVersion+" windows amd64";
+        string line=text.Split('\n')[0].Trim();
+        return line==prefix||line.StartsWith(prefix+" ",StringComparison.Ordinal);
+    }
+    static async Task VerifyCore(){
+        var si=new ProcessStartInfo(CorePath){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+        si.ArgumentList.Add("-v");
+        using var probe=Process.Start(si)??throw new IOException("无法检查网络内核版本");
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try{
+            var output=probe.StandardOutput.ReadToEndAsync(timeout.Token);
+            var error=probe.StandardError.ReadToEndAsync(timeout.Token);
+            await probe.WaitForExitAsync(timeout.Token);
+            await Task.WhenAll(output,error);
+            if(probe.ExitCode!=0||!SupportedCore(await output))
+                throw new IOException("网络内核不配套，请完整更新程序和 core 文件夹；需要 "+RequiredCoreVersion+"，尚未开启接管");
+        }catch(OperationCanceledException){
+            try{if(!probe.HasExited)probe.Kill(true);}catch(InvalidOperationException){}
+            throw new IOException("网络内核版本检查超时，尚未开启接管");
+        }
+    }
     internal static string ServiceGroup(string id)=>"Service-"+id;
     internal static string RelayFor(string id)=>id switch{
         "steam"=>"SteamRelay","epic"=>"EpicRelay","quark"=>"QuarkRelay",
@@ -122,6 +145,7 @@ internal sealed class NativeCapture : IAsyncDisposable
         if(testConfigure!=null&&(tun||!router.TestMode))throw new InvalidOperationException("Test configuration requires an isolated router without TUN");
         if(tun&&!Program.Admin)throw new IOException("原生客户端接管需要管理员权限");
         if(!File.Exists(CorePath))throw new IOException("缺少 core/mihomo.exe");
+        await VerifyCore();
         // Refuse competing TUNs; do not edit any external application's config.
         if(tun){var active=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up&&(n.Name.Contains("Mihomo",StringComparison.OrdinalIgnoreCase)||n.Name.Contains("Clash",StringComparison.OrdinalIgnoreCase)||n.Name.Equals("Meta",StringComparison.OrdinalIgnoreCase)||n.Description.Contains("Meta Tunnel",StringComparison.OrdinalIgnoreCase)||n.Name.Contains("IPv6Lens-TUN",StringComparison.OrdinalIgnoreCase)));if(active)throw new IOException("检测到其他 TUN 正在运行，未叠加接管");}
         if(tun){router.Nodes.InterfaceIndex=NodeNetwork.CaptureInterface();router.AuxiliaryInterfaceIndex=NodeNetwork.CaptureIPv4Interface();}

@@ -1,0 +1,11 @@
+diff --git a/adapter/outbound/direct.go b/adapter/outbound/direct.go
+--- a/adapter/outbound/direct.go
++++ b/adapter/outbound/direct.go
+@@ -26,6 +26,7 @@ func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+ 	if err := d.loopBack.CheckConn(metadata); err != nil {
+ 		return nil, err
+ 	}
++	metadata = preserveDirectDestination(metadata)
+ 	opts := d.DialOptions()
+ 	opts = append(opts, dialer.WithResolver(resolver.DirectHostResolver))
+ 	c, err := dialer.DialContext(ctx, "tcp", metadata.RemoteAddress(), opts...)

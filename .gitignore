@@ -3,6 +3,7 @@
 !/README.md
 !/AGENTS.md
 !/build.ps1
+!/build-core.ps1
 !/package.ps1
 !/THIRD-PARTY-NOTICES.md
 !/src/
@@ -13,5 +14,8 @@
 !/src/assets/app.ico
 !/third-party/
 !/third-party/mihomo-LICENSE.txt
+!/third-party/mihomo-original-destination.patch
+!/third-party/mihomo-original-destination.go
+!/third-party/mihomo-original-destination_test.go
 !/tests/
 !/tests/pac-routing.cjs

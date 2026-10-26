@@ -12,7 +12,7 @@
 
 普通用户请下载 `IPv6-Download-Assistant-3.0.11-win-x64-portable.zip`。GitHub 自动生成的 `Source code (zip)` 是源码，不是可直接运行的软件。
 
-当前源码为 **v3.3.7 混合开关与服务隔离版**：每服务提供独立混合模式开关，持续显示辅助额度与内容 IPv6 保护；关闭接管仍监测可归属的流量，新增浏览器 / 本机 AList 的同进程 DNS 关联。修正原生服务关闭后嗅探仍会改写客户端服务器地址的问题；开启服务使用独立中继入口，纯 IP 请求不会误入已关闭的“其他网站”原路径。自动模式先尝试客户端已经选定的 IPv6 地址，手动节点优先；明确列出的夸克、B站辅助主机优先绑定物理出口直连，IPv4 仍扣原有额度。没有本机 IPv6 时明确提示，不自动解除内容保护。保留 v3.3.6 通用本地网络识别、自动运行报告和辅助并发隔离；本机夹具不等于已解决真实内核高 CPU、入口失联或 4K 爆米花低速。可按文末命令本地构建；公开发行包仍为 v3.0.11。
+当前源码为 **v3.3.8 原目标地址修正版**：在 v3.3.7 的独立混合开关、被动计量、服务中继隔离和原生 IPv6 目标优先基础上，使用专属补丁内核 `v1.19.10-ipv6lens.1`。修正 DNS 映射后 DIRECT 仍可能重新解析域名、换掉客户端所选服务器的问题；仅关闭嗅探改写并不足以覆盖此路径。普通域名请求与 fake-IP 行为保留，IPv6 内容保护和辅助 IPv4 额度不变。构建、启动和打包拒绝未配套内核，不能只替换主程序或借用其他代理的 core。没有本机 IPv6 时明确提示，不自动解除内容保护。本机夹具不等于已解决真实内核高 CPU、入口失联或 4K 爆米花低速。可按文末命令本地构建；公开发行包仍为 v3.0.11。
 
 免安装包包含 .NET 10 运行时和独立 Mihomo 内核，无需安装 .NET 或 WSL。程序尚未签名，首次运行时 Windows 可能显示未知发布者提示。
 
@@ -84,7 +84,7 @@ v3.3.6 区分本地网络目标与公网目标，不再把“域名形式的内�
 
 关闭分类后不再查询内容专用 IPv6 DNS，直接使用原代理；没有原代理时按系统解析优先尝试 IPv4。关闭单分类不会放开其他仍开启分类的 IPv4 限制。接管失效时也允许主动关闭单分类恢复原路径，但重新开启前仍需全部关闭再启动。原代理的最终出口协议不可确认，面板计入“未知”而不是冒充 IPv4 或 IPv6。
 
-v3.3.7 对原生客户端关闭的分类直接保留客户端目标地址，不再由域名嗅探改写服务器。其他服务仍开启时，全机 TUN 仍存在，不能将单分类 DIRECT 描述成物理上完全绕过 TUN；全部关闭才释放接管。开启服务的纯 IP HTTP/HTTPS 连接在中继有界读取 Host/SNI 后原样回放，不解密 TLS、不修改请求签名、Range 或鉴权；无可用域名时仍保留服务上下文，IPv4 目标不会借道已关闭的全局分类。
+v3.3.7 禁止嗅探清除客户端目标，但未覆盖 DNS 映射导致 DIRECT 重新解析的路径。v3.3.8 的专属内核在映射或嗅探分类的 DIRECT TCP 连接中保留已有目标 IP，域名仍用于服务识别与报告，不再用于重选直连服务器。其他服务仍开启时，全机 TUN 仍存在，不能将单分类 DIRECT 描述成物理上完全绕过 TUN；全部关闭才释放接管。开启服务的纯 IP HTTP/HTTPS 连接在中继有界读取 Host/SNI 后原样回放，不解密 TLS、不修改请求签名、Range 或鉴权；无可用域名时仍保留服务上下文，IPv4 目标不会借道已关闭的全局分类。
 
 v3.1.1 修复中继在一端仅关闭发送方向时过早截断响应的问题，并记录传输异常。无 IPv6 地址、IPv6 解析失败和 IPv6 建连失败会分别显示；这些失败不会自动转为 IPv4。软件不解密媒体地址，也不改写带签名的 CDN 链接，不能给没有 IPv6 的内容服务器凭空添加 IPv6。
 
@@ -133,13 +133,22 @@ v3.3.5 在同一独立后台线程增加运行采样，不依赖界面速度刷�
 
 主程序使用 C#、.NET 10 和 WinForms，底层接管使用独立 Mihomo 进程。
 
-在 Windows 11 x64 上安装 .NET 10 SDK，准备好内核后，在仓库根目录执行：
+在 Windows 11 x64 上准备 .NET 10 SDK、Git、Go 1.24.3 和官方 Mihomo v1.19.10 源码归档。在仓库根目录先构建专属内核，再发布主程序。构建脚本沿用调用进程的代理设置，不修改系统环境或外部代理：
 
 ```powershell
-./build.ps1 -Mihomo 'C:/path/to/mihomo.exe'
+./build-core.ps1 -SourceArchive 'C:/path/to/mihomo-v1.19.10-source.zip'
+./build.ps1 -Mihomo './work/core-build/mihomo.exe'
 ```
 
 程序输出到 `app/IPv6Lens.exe`。
+
+`build-core.ps1` 在独立解包目录应用 `third-party/mihomo-original-destination.patch`，加入同目录的 Go helper 与局部测试，测试通过后以 `with_gvisor` 构建 Windows amd64 内核。补丁只调整 DIRECT TCP 的目标地址使用，不改变 DNS 模式、混合额度或服务规则。运行时在开启接管前检查内核版本；不配套时明确失败，不退回旧内核。
+
+原目标与服务开关回归会先将既有物理网卡的本机 IPv4 种入真实 redir-host DNS 映射，再令 DIRECT 解析器返回不同的回环地址，验证最终连接仍到客户端选定的本机服务器，并检查另一服务的 IPv6 流不中断。不启用 TUN、不访问公网、不修改地址或路由：
+
+```powershell
+./app/IPv6Lens.exe --takeover-isolation-test 'C:/path/to/existing-folder/isolation.json'
+```
 
 界面回归测试只启动本机隔离中继，不修改系统代理、Clash 或网卡配置；输出 JSON 检查结果及深色、浅色、分流、失效和窄窗口截图：
 
@@ -183,9 +192,9 @@ v3.3.5 在同一独立后台线程增加运行采样，不依赖界面速度刷�
 制作免安装包：
 
 ```powershell
-./package.ps1 -Mihomo 'C:/path/to/mihomo.exe' -MihomoSource 'C:/path/to/mihomo-v1.19.10-source.zip'
+./package.ps1 -Mihomo './work/core-build/mihomo.exe' -MihomoSource 'C:/path/to/mihomo-v1.19.10-source.zip'
 ```
 
-压缩包输出到 `releases/`。打包脚本只收集主程序、图标、内核、说明、许可证和对应版本的 Mihomo 源码归档，不收集本机配置或日志。
+压缩包输出到 `releases/`。打包脚本只收集主程序、图标、内核、说明、许可证、对应版本的 Mihomo 原始源码归档及本软件的内核补丁、helper、测试与构建脚本，不收集本机配置或日志。
 
-第三方组件包括 Mihomo Meta v1.19.10（Windows amd64，GPL-3.0）、YamlDotNet 16.3.0、Microsoft.Diagnostics.Tracing.TraceEvent 3.1.28 和 .NET 10。来源和许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+第三方组件包括基于 Mihomo Meta v1.19.10 的补丁内核 v1.19.10-ipv6lens.1（Windows amd64，GPL-3.0）、YamlDotNet 16.3.0、Microsoft.Diagnostics.Tracing.TraceEvent 3.1.28 和 .NET 10。来源和许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

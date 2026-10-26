@@ -1,5 +1,10 @@
-param([string]$Dotnet = 'dotnet', [string]$Mihomo = 'C:\Program Files\Clash Verge\verge-mihomo.exe')
+param([string]$Dotnet = 'dotnet', [Parameter(Mandatory)][string]$Mihomo)
 $ErrorActionPreference = 'Stop'
+if (!(Test-Path -LiteralPath $Mihomo)) { throw 'Provide the private patched Mihomo binary with -Mihomo; see build-core.ps1.' }
+$coreVersion = & $Mihomo -v
+if ($LASTEXITCODE -ne 0 -or ($coreVersion -join "`n") -notmatch '^Mihomo Meta v1\.19\.10-ipv6lens\.1 windows amd64(?:\s|$)') {
+    throw 'Build requires the patched v1.19.10-ipv6lens.1 Windows amd64 core, not an external proxy core.'
+}
 $env:HTTP_PROXY='http://127.0.0.1:7897'
 $env:HTTPS_PROXY=$env:HTTP_PROXY
 $env:ALL_PROXY=$env:HTTP_PROXY
@@ -12,7 +17,6 @@ $env:DOTNET_NOLOGO='1'
 if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
 Write-Output (Join-Path $PSScriptRoot 'app/IPv6Lens.exe')
 
-if (!(Test-Path -LiteralPath $Mihomo)) { throw 'Provide an existing Mihomo binary with -Mihomo.' }
 New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot 'app/core') | Out-Null
 Copy-Item -LiteralPath $Mihomo -Destination (Join-Path $PSScriptRoot 'app/core/mihomo.exe')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'src/assets/app.ico') -Destination (Join-Path $PSScriptRoot 'app/app.ico') -Force

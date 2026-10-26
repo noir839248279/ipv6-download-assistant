@@ -22,7 +22,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 本软件通过独立的 `core/mihomo.exe` 进程完成本地网络接管与规则分流，主程序通过本地配置和控制接口与内核通信。
 
-发布包使用 Mihomo Meta v1.19.10（Windows amd64），未修改内核二进制。Mihomo 采用 GNU General Public License v3.0（GPL-3.0）授权。完整许可证见 `third-party/mihomo-LICENSE.txt`，该版本的官方源码归档见 `third-party/mihomo-v1.19.10-source.zip`。
+v3.3.8 起使用基于 Mihomo Meta v1.19.10 的修改版 `v1.19.10-ipv6lens.1`（Windows amd64）。本软件于 2026-10-26 修改 DIRECT TCP 地址选择：映射或嗅探分类不再替换客户端已有目标 IP；普通域名与 fake-IP 行为不变。Mihomo 及此修改采用 GNU General Public License v3.0（GPL-3.0）授权。
+
+完整许可证见 `third-party/mihomo-LICENSE.txt`，原始官方源码归档见 `third-party/mihomo-v1.19.10-source.zip`。对应修改源码为 `third-party/mihomo-original-destination.patch`、`third-party/mihomo-original-destination.go` 和 `third-party/mihomo-original-destination_test.go`；`build-core.ps1` 解包、应用修改、运行局部测试并构建。构建需要 Windows amd64、Git 和 Go 1.24.3，启用 `with_gvisor`，完整命令见 README。发布时必须将这些材料与修改后的内核一起提供，不借用或覆盖用户其他代理程序的内核。
 
 来源：https://github.com/MetaCubeX/mihomo/tree/v1.19.10
 源码归档：https://codeload.github.com/MetaCubeX/mihomo/zip/refs/tags/v1.19.10
