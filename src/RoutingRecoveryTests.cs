@@ -205,7 +205,7 @@ internal static class RoutingRecoveryTests
         await serving;
     }
 
-    sealed class FixtureDns : IAsyncDisposable
+    internal sealed class FixtureDns : IAsyncDisposable
     {
         readonly UdpClient socket = new(new IPEndPoint(IPAddress.Loopback, 0));
         readonly CancellationTokenSource stop = new();

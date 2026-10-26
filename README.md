@@ -131,6 +131,12 @@ v3.1.2 修复中继自身的 IPv6 套接字被 TUN 二次捕获后，内核按�
 ./app/IPv6Lens.exe --proxy-bypass-test 'C:/path/to/existing-folder/proxy-bypass.json'
 ```
 
+完整 HTTPS 链路回归仅使用本机 TLS 源、模拟原代理、DNS 和启用嗅探的隔离内核，分别检查浏览器直达中继、原生接管到中继、辅助原代理与内容 IPv6。此检查不启用 TUN，也不能替代 Windows 实机入口失联的诊断：
+
+```powershell
+./app/IPv6Lens.exe --native-pipeline-test 'C:/path/to/existing-folder/pipeline.json'
+```
+
 制作免安装包：
 
 ```powershell
