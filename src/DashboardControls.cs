@@ -288,10 +288,14 @@ internal sealed class SplitTile : DashboardSurface
 internal sealed class ServiceTile : DashboardSurface
 {
     internal readonly DashboardToggle Toggle;
+    internal readonly ComboBox ModeSelect = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    internal ServiceMode Mode;
     internal readonly string Id;
     readonly string title, mark;
     readonly Color brand;
     internal readonly long[] Bytes = new long[3];
+    internal readonly double[] Rates = new double[3];
+    long auxiliaryUsed;
     internal double DownloadRate;
     internal double UploadRate;
     internal string Server = "尚未发现服务器", State = "等待连接";
@@ -310,6 +314,10 @@ internal sealed class ServiceTile : DashboardSurface
             _ => ("其他网站", "◎", Color.FromArgb(53, 184, 167))
         };
         Toggle = new DashboardToggle { AccessibleName = title + " IPv6 接管" };
+        ModeSelect.Items.AddRange(new object[] { "混合保护", "严格 IPv6" });
+        ModeSelect.SelectedIndex = 0;
+        ModeSelect.AccessibleName = title + "连接模式";
+        Controls.Add(ModeSelect);
         Controls.Add(Toggle); AccessibleName = title;
     }
     protected override void OnResize(EventArgs e)
@@ -317,6 +325,8 @@ internal sealed class ServiceTile : DashboardSurface
         base.OnResize(e);
         Toggle.SetBounds(Width - (int)(66 * ScaleFactor), (int)(16 * ScaleFactor),
             (int)(46 * ScaleFactor), (int)(28 * ScaleFactor));
+        ModeSelect.SetBounds((int)(20 * ScaleFactor), (int)(69 * ScaleFactor),
+            (int)(126 * ScaleFactor), (int)(28 * ScaleFactor));
     }
     internal void Update(DownloadCounter counter, string server, bool lost)
     {
@@ -324,13 +334,16 @@ internal sealed class ServiceTile : DashboardSurface
         DownloadRate = counter.Rate4 + counter.Rate6 + counter.RateProxy;
         UploadRate = counter.UploadRate4 + counter.UploadRate6 + counter.UploadRateProxy;
         ProtectionLost = lost && counter.Enabled;
+        Mode = counter.Mode;
+        Rates[0]=counter.Rate6;Rates[1]=counter.Rate4;Rates[2]=counter.RateProxy;
+        auxiliaryUsed=counter.Auxiliary.Used;
         Server = Id == "global" ? "公共双栈 CDN" : server;
-        State = !counter.Enabled ? "IPv4／原代理"
-            : lost ? Id == "global" ? "尝试原连接方式" : "接管失效 · 已阻断"
+        State = !counter.Enabled ? counter.State.Contains("监测") ? counter.State : "已关闭 · 原路径"
+            : lost ? "接管失效 · 已阻断"
             : counter.RateProxy > 1024 && counter.RateProxy >= Math.Max(counter.Rate4, counter.Rate6) ? "正在使用原代理"
             : counter.Rate4 + counter.Rate6 > 1024 ? counter.Rate6 >= counter.Rate4 ? "下载中 · IPv6" : "下载中 · IPv4"
             : counter.UploadRate4 + counter.UploadRate6 + counter.UploadRateProxy > 1024 ? "上传中"
-            : counter.State.Contains("失败") || counter.State.Contains("失效") || counter.State.Contains("未回退") ? counter.State
+            : counter.State.Contains("失败") || counter.State.Contains("失效") || counter.State.Contains("未回退") || counter.State.Contains("额度") ? counter.State
             : "等待连接";
         AccessibleDescription = $"{State}，下载 {TrafficStore.Bytes(DownloadRate)}/s，IPv6 占比 {Percent:F1}%，服务器 {Server}";
         Invalidate();
@@ -342,12 +355,13 @@ internal sealed class ServiceTile : DashboardSurface
         TextAt(g, title, new(64, 15, w - 140, 25), 14, bold: true);
         TextAt(g, Server, new(64, 40, w - 84, 21), 10.5f, DashboardTheme.Muted);
         string rate = TrafficStore.Bytes(DownloadRate) + "/s";
-        TextAt(g, rate, new(18, 73, w - 128, 32), 23, bold: true);
-        TextAt(g, Percent.ToString("F1") + "% IPv6", new(w - 116, 78, 98, 25),
+        TextAt(g, !Toggle.Checked?"已关闭":Mode==ServiceMode.Mixed?"内容仅 IPv6":"全部仅 IPv6", new(158, 68, w - 178, 28), 10, DashboardTheme.V6);
+        TextAt(g, rate, new(18, 110, w - 128, 32), 23, bold: true);
+        TextAt(g, Percent.ToString("F1") + "% IPv6", new(w - 116, 115, 98, 25),
             11, DashboardTheme.V6, true, StringAlignment.Far);
-        TextAt(g, "↑ " + TrafficStore.Bytes(UploadRate) + "/s", new(20, 107, w - 40, 20), 11, DashboardTheme.Muted);
+        TextAt(g, "↑ " + TrafficStore.Bytes(UploadRate) + "/s", new(20, 144, w - 40, 20), 11, DashboardTheme.Muted);
         float barWidth = w - 40, offset = 20;
-        FillRound(g, new(offset, 137, barWidth, 5), DashboardTheme.Raised, 2);
+        FillRound(g, new(offset, 174, barWidth, 5), DashboardTheme.Raised, 2);
         double total = Bytes.Sum(n => (double)n);
         if (total > 0)
             for (int i = 0; i < 3; i++)
@@ -356,24 +370,26 @@ internal sealed class ServiceTile : DashboardSurface
                 if (width > 0)
                 {
                     using var brush = new SolidBrush(DashboardTheme.Protocol(i));
-                    g.FillRectangle(brush, offset, 137, width, 5);
+                    g.FillRectangle(brush, offset, 174, width, 5);
                     offset += width;
                 }
             }
         for (int i = 0; i < 3; i++)
         {
             float x = 20 + i * barWidth / 3;
-            Dot(g, x + 3, 161, DashboardTheme.Protocol(i), 2.5f);
-            TextAt(g, DashboardTheme.Protocols[i], new(x + 12, 150, barWidth / 3 - 14, 22), 11, DashboardTheme.Muted);
-            TextAt(g, TrafficStore.Bytes(Bytes[i]), new(x, 176, barWidth / 3 - 6, 22), 12, bold: true);
+            Dot(g, x + 3, 198, DashboardTheme.Protocol(i), 2.5f);
+            TextAt(g, DashboardTheme.Protocols[i], new(x + 12, 187, barWidth / 3 - 14, 22), 11, DashboardTheme.Muted);
+            TextAt(g, TrafficStore.Bytes(Bytes[i]), new(x, 213, barWidth / 3 - 6, 22), 12, bold: true);
+            TextAt(g, TrafficStore.Bytes(Rates[i])+"/s",new(x,237,barWidth/3-6,20),10,DashboardTheme.Muted);
         }
+        TextAt(g, Mode==ServiceMode.Mixed?$"辅助原路径额度 {auxiliaryUsed/1048576d:F2} / 2 MiB":"严格模式 · 不使用辅助 IPv4",new(20,263,w-40,20),10,auxiliaryUsed>=AuxiliaryBudget.Limit?DashboardTheme.Error:DashboardTheme.Muted);
         using var rule = new Pen(DashboardTheme.Line);
         g.DrawLine(rule, 20, h - 42, w - 20, h - 42);
         Dot(g, 23, h - 22, ProtectionLost ? DashboardTheme.Error : Toggle.Checked ? DashboardTheme.V6 : DashboardTheme.Muted, 3);
         TextAt(g, State, new(34, h - 36, w - 148, 28), 11, ProtectionLost ? DashboardTheme.Error : DashboardTheme.Muted);
-        string policy = ProtectionLost ? "接管失效" : !Toggle.Checked ? "原连接方式" : Id == "global" ? "IPv6 优先" : "仅 IPv6";
+        string policy = ProtectionLost ? "接管失效" : !Toggle.Checked ? "原连接方式" : Mode==ServiceMode.Mixed ? "混合保护" : "严格 IPv6";
         Color color = ProtectionLost ? DashboardTheme.Error : !Toggle.Checked ? DashboardTheme.Muted :
-            Id == "global" ? DashboardTheme.Unknown : DashboardTheme.V6;
+            Mode == ServiceMode.Mixed ? DashboardTheme.Unknown : DashboardTheme.V6;
         FillRound(g, new(w - 106, h - 33, 86, 23), Color.FromArgb(24, color), 4);
         TextAt(g, policy, new(w - 106, h - 33, 86, 23), 10.5f, color, true, StringAlignment.Center);
     }

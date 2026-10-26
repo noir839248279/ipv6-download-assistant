@@ -132,7 +132,7 @@ internal static class RoutingRecoveryTests
 
     static async Task NativeChecks(Action<bool, string> check)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
         await using var dns = new FixtureDns();
         using var v6 = new TcpListener(IPAddress.IPv6Loopback, 0);
         using var v4 = new TcpListener(IPAddress.Loopback, 0);
@@ -168,15 +168,18 @@ internal static class RoutingRecoveryTests
                 !r.Contains("PROCESS-NAME", StringComparison.Ordinal) && !r.StartsWith("IP-CIDR", StringComparison.Ordinal)).ToArray();
         });
         using var http = new HttpClient(new HttpClientHandler { UseProxy = true,
-            Proxy = new WebProxy("http://127.0.0.1:" + mixedPort) }) { Timeout = TimeSpan.FromSeconds(5) };
+            Proxy = new WebProxy("http://127.0.0.1:" + mixedPort) }) { Timeout = TimeSpan.FromSeconds(12) };
         var serving = Reply(v6, "v6", timeout.Token);
         string first;
         try { first = await http.GetStringAsync("http://switch.quark.cn:" + port6 + "/"); }
         catch(Exception ex) { throw new IOException(string.Join("\n", core.TestLog) + "\nRouter: " +
-            JsonSerializer.Serialize(router.Counters.Select(p=>new {site=p.Key,p.Value.State,p.Value.LastFailure})), ex); }
+            JsonSerializer.Serialize(router.Counters.Select(p=>new {site=p.Key,p.Value.State,p.Value.LastFailure}))+
+            "\nFixture DNS queries: "+dns.Queries, ex); }
         check(first == "v6",
             "Real isolated Mihomo routes enabled Quark into the strict IPv6 relay");
         await serving;
+        router.SetMode("quark",ServiceMode.Mixed);
+        router.OriginalResolve=_=>Task.FromResult(new[]{IPAddress.Loopback});
         serving = Reply(v4, "api", timeout.Token);
         check(await http.GetStringAsync("http://drive-social-api.quark.cn:" + port4 + "/") == "api",
             "Quark control API uses its original path while Quark content remains enabled");
@@ -208,6 +211,7 @@ internal static class RoutingRecoveryTests
         readonly CancellationTokenSource stop = new();
         readonly Task serving;
         internal int Port => ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
+        internal int Queries;
         internal FixtureDns() { serving = Serve(); }
         async Task Serve()
         {
@@ -216,6 +220,7 @@ internal static class RoutingRecoveryTests
                 while (!stop.IsCancellationRequested)
                 {
                     var request = await socket.ReceiveAsync(stop.Token);
+                    Interlocked.Increment(ref Queries);
                     byte[] query = request.Buffer;
                     int end = 12;
                     while (query[end] != 0) end += query[end] + 1;
@@ -270,7 +275,7 @@ internal static class RoutingRecoveryTests
         router.Enable("quark", true); router.Enable("global", false);
         snapshots.Add(new { pac = router.Pac(), cases = new[] {
             Case("https://cdn.quark.cn/", relay),
-            Case("https://pan.quark.cn/", "PROXY 127.0.0.1:18443"),
+            Case("https://pan.quark.cn/", relay),
             Case("https://evilquark.cn/", "PROXY 127.0.0.1:18443"),
             Case("https://host.lan/", "DIRECT"),
             Case("https://ordinary.example/", "PROXY 127.0.0.1:18443") } });

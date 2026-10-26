@@ -24,6 +24,24 @@ internal sealed partial class DownloadForm
         }
         Check(DefaultsActive && master.Checked && !master.Mixed, "Startup: six services and master enabled");
         Check(!SplitActive, "Split routing defaults to off independently of services");
+        Check(counters.Values.All(r=>r.Mode==ServiceMode.Mixed),"All service mode selectors default to protected mixed");
+        cards["quark"].ModeSelect.SelectedIndex=1;await serviceWork;
+        Check(counters["quark"].Mode==ServiceMode.Strict && counters["bilibili"].Mode==ServiceMode.Mixed,
+            "Mode selection affects only its own service");
+        cards["quark"].ModeSelect.SelectedIndex=0;await serviceWork;
+        int syncCalls=0;
+        SyncServicesTest=_=>++syncCalls==1?Task.FromException(new IOException("Injected selector failure")):Task.CompletedTask;
+        await Switch("quark",false);
+        Check(DefaultsActive && syncCalls==2,"Single-service sync failure rolls back target without stopping all services");
+        SyncServicesTest=null;
+        counters["quark"].V6=12345;counters["quark"].Auxiliary.Reserve(100);
+        await SetAll(false);
+        Check(counters["quark"].V6==12345&&cards["quark"].Bytes[0]==12345,
+            "Stopping capture retains cumulative totals on dashboard");
+        await SetAll(true);
+        Check(counters["quark"].V6==12345&&counters["quark"].Auxiliary.Used==100,
+            "Restarting relay preserves totals and auxiliary allowance");
+        ResetTraffic();
         var pendingRead = new TaskCompletionSource<SplitState>();
         var polling = RefreshClashBinding(() => pendingRead.Task);
         try
@@ -172,7 +190,7 @@ internal sealed partial class DownloadForm
         Snapshot("loss");
         await Switch("quark", false);
         Check(!router!.Counters["quark"].Enabled && !cards["quark"].ProtectionLost &&
-            cards["quark"].State == "IPv4／原代理" && router.Counters["bilibili"].Enabled,
+            cards["quark"].State == "已关闭 · 原路径" && router.Counters["bilibili"].Enabled,
             "A single service can restore its original route after protection loss");
         await Switch("quark", true);
         Check(!router.Counters["quark"].Enabled && !cards["quark"].Toggle.Checked,

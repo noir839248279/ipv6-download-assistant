@@ -73,23 +73,25 @@ public sealed class EtwCollector : IDisposable
     readonly TrafficStore store;
     TraceEventSession? session;
     Process? watchdog;
+    readonly string role;
     public string Status { get; private set; } = "未启动";
     public long Lost => session?.EventsLost ?? 0;
-    public EtwCollector(TrafficStore store) { this.store=store; }
+    public EtwCollector(TrafficStore store,string role="") { this.store=store;this.role=role; }
     public void Start()
     {
         if(!Program.Admin) { Status="未采集：请点击「管理员模式」授权真实流量监控"; return; }
         try {
             foreach(var name in TraceEventSession.GetActiveSessionNames().Where(n=>n.StartsWith("IPv6Lens-"))) {
-                if(!int.TryParse(name[9..],out int owner))continue;
+                if(!int.TryParse(name[9..].Split('-')[0],out int owner))continue;
                 try{using var process=Process.GetProcessById(owner);if(!process.HasExited)continue;}catch(ArgumentException){}
                 try{using var orphan=new TraceEventSession(name,TraceEventSessionOptions.Attach);orphan.Stop();}catch{}
             }
-            session=new TraceEventSession("IPv6Lens-"+Environment.ProcessId) { StopOnDispose=true, BufferSizeMB=64 };
+            session=new TraceEventSession("IPv6Lens-"+Environment.ProcessId+(role.Length>0?"-"+role:"")) { StopOnDispose=true, BufferSizeMB=64 };
             // TraceEvent must enable the kernel provider before Source is materialized.
             session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP | KernelTraceEventParser.Keywords.Process);
             var start=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};
             foreach(var a in new[]{"--trace-watch",Environment.ProcessId.ToString(),Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks.ToString()})start.ArgumentList.Add(a);
+            if(role.Length>0)start.ArgumentList.Add(role);
             watchdog=Process.Start(start);
             var k=session.Source.Kernel;
             // TCP receive fields are local -> remote, unlike incoming UDP datagrams.
@@ -109,10 +111,10 @@ public sealed class EtwCollector : IDisposable
         } catch(Exception ex) { Status="采集不可用："+ex.Message; Dispose(); }
     }
     public void Dispose() { session?.Dispose(); session=null;if(watchdog!=null){try{if(!watchdog.HasExited)watchdog.Kill();}catch{}watchdog.Dispose();watchdog=null;} }
-    internal static void Watch(int pid,long birth)
+    internal static void Watch(int pid,long birth,string role="")
     {
         if(!Program.Admin)return;
         try{using var parent=Process.GetProcessById(pid);if(parent.StartTime.ToUniversalTime().Ticks!=birth)return;parent.WaitForExit();}catch(ArgumentException){}
-        try{using var orphan=new TraceEventSession("IPv6Lens-"+pid,TraceEventSessionOptions.Attach);orphan.Stop();}catch{}
+        try{using var orphan=new TraceEventSession("IPv6Lens-"+pid+(role.Length>0?"-"+role:""),TraceEventSessionOptions.Attach);orphan.Stop();}catch{}
     }
 }

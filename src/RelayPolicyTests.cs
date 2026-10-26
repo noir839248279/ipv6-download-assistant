@@ -129,7 +129,7 @@ internal static class RelayPolicyTests
                     Check(router.Counters[site].V4 == 0 && router.Counters[site].Proxy == 0, "Half-close used fallback");
                 });
             }
-            await Case("Quark control APIs retain the original path independently of global and content switches", async () =>
+            await Case("Mixed Quark control APIs use a metered original path independently of global switch", async () =>
             {
                 await using var router = new DownloadRouter { ProductionPolicies = true };
                 await router.Start(false);
@@ -145,6 +145,7 @@ internal static class RelayPolicyTests
                     return Task.FromResult(new[] { IPAddress.Loopback });
                 };
                 router.Enable("global", true);
+                router.SetMode("quark",ServiceMode.Mixed);
                 using var http = Client(router);
                 foreach (bool enabled in new[] { false, true })
                 {
@@ -152,9 +153,9 @@ internal static class RelayPolicyTests
                     Check(await http.GetStringAsync($"http://drive.quark.cn:{port}/") == "ok", "Control API unavailable");
                     Check(contentQueries == 0 && originalQueries > 0, "Global preference still overrides Quark control traffic");
                 }
-                Check(router.Counters["quark"].V4 == 0 && router.Counters["quark"].V6 == 0, "Control bytes counted as content");
+                Check(router.Counters["quark"].V4 > 0 && router.Counters["quark"].V6 == 0 && router.Counters["quark"].Auxiliary.Used>0, "Auxiliary IPv4 missing from service statistics");
                 Check(await http.GetStringAsync($"http://dl-test.quark.cn:{port}/") == "ok" &&
-                    router.Counters["quark"].V6 > 0 && router.Counters["quark"].V4 == 0, "Enabled content lost strict IPv6");
+                    router.Counters["quark"].V6 > 0, "Enabled content lost strict IPv6");
                 Check(await http.GetStringAsync($"http://ordinary.example:{port}/") == "ok" &&
                     router.Counters["global"].V6 > 0, "Unrelated global preference changed");
             });

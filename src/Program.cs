@@ -12,6 +12,7 @@ internal static class Program
         if(args.Length==2&&args[0]=="--node-live-test"){NodeTests.Live(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-egress-test"){NativeEgressTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--relay-policy-test"){RelayPolicyTests.Run(args[1]);return;}
+        if(args.Length==2&&args[0]=="--mixed-policy-test"){MixedPolicyTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--relay-resilience-test"){RelayResilienceTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-delivery-test"){string prefix=args[1];NativeTests.Suite(prefix+".suite.json");if(Environment.ExitCode!=0)return;args=new[]{"--ui-native-test",prefix+".png"};}
         if(args.Length==2&&args[0]=="--platform-probes"){PlatformProbes.Run(args[1]);return;}
@@ -32,6 +33,7 @@ internal static class Program
         if (args.Length == 3 && args[0] == "--browser-test-backend") { IntegrationTests.BrowserBackend(args[1],args[2]); return; }
         if (args.Length == 2 && args[0] == "--network-check") { File.WriteAllText(args[1],System.Text.Json.JsonSerializer.Serialize(Diagnostics.Network().GetAwaiter().GetResult(),new System.Text.Json.JsonSerializerOptions{WriteIndented=true})); return; }
         if (args.Length == 3 && args[0] == "--trace-watch") { EtwCollector.Watch(int.Parse(args[1]),long.Parse(args[2])); return; }
+        if (args.Length == 4 && args[0] == "--trace-watch" && args[3]=="passive") { EtwCollector.Watch(int.Parse(args[1]),long.Parse(args[2]),args[3]); return; }
         if (args.Length == 2 && args[0] == "--trace-owner") { using var c=new EtwCollector(new TrafficStore());c.Start();File.WriteAllText(args[1],c.Status);Console.ReadLine();return; }
         if (args.Length == 4 && args[0] == "--observe-process") { IntegrationTests.Observe(args[1],args[2],int.Parse(args[3]));return; }
         if (args.Length == 2 && args[0] == "--stop-test-process") { IntegrationTests.StopTestProcess(int.Parse(args[1]));return; }

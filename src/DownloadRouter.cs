@@ -12,6 +12,8 @@ using Microsoft.Extensions.Logging;
 namespace IPv6Lens;
 internal sealed record DownloadSite(string Id,string Name,string[] Domains);
 internal sealed record DownloadFailure(DateTime TimeUtc,string Stage,string Error,string? Reason,string? SocketError,string? Host);
+internal enum ServiceMode { Mixed, Strict }
+internal sealed class AuxiliaryBudgetException() : IOException("辅助请求 IPv4 额度已用完；大文件仍限 IPv6");
 internal sealed class IPv6RouteException(string reason,Exception? inner=null) : IOException("IPv6 route unavailable",inner)
 {
     internal string Reason {get;}=reason;
@@ -22,6 +24,8 @@ internal sealed class DownloadCounter
     public long Upload4,Upload6,UploadProxy,LastUpload4,LastUpload6,LastUploadProxy;public double UploadRate4,UploadRate6,UploadRateProxy;
     public volatile string State="尚未接管下载",Server="";
     public volatile bool Enabled;
+    internal volatile ServiceMode Mode = ServiceMode.Strict;
+    internal readonly AuxiliaryBudget Auxiliary = new();
     public long Failures;
     public volatile DownloadFailure? LastFailure;
     internal string ShareText {get{long a=Interlocked.Read(ref V4),b=Interlocked.Read(ref V6),u=Interlocked.Read(ref Proxy);double total=(double)a+b+u;return total==0?"暂无流量":(u>0?"已确认 IPv6 ":"IPv6 ")+(100d*b/total).ToString("F1",System.Globalization.CultureInfo.InvariantCulture)+"%";}}
@@ -92,21 +96,32 @@ internal sealed class DownloadRouter : IAsyncDisposable
         if(Counters.Values.Any(c=>c.Enabled)&&!owned){
             ProtectionLost=true;
             ProtectionLossReason??="system_proxy_ownership_lost";ProtectionLostAtUtc=DateTime.UtcNow;
-            foreach(var s in sessions.Values)if(!ProductionPolicies||(s.Site!="global"&&Counters[s.Site].Enabled))s.Close();
+            foreach(var s in sessions.Values)if(!ProductionPolicies||Counters[s.Site].Enabled)s.Close();
             foreach(var r in Counters.Values)r.State=r.Enabled?"代理设置失效：未受保护，请暂停下载":"已关闭，允许 IPv4／原代理";
             return false;
         }
         return true;
     }
     static readonly HashSet<string> QuarkControls=new(StringComparer.OrdinalIgnoreCase){"pan.quark.cn","drive.quark.cn","drive-pc.quark.cn","drive-h.quark.cn","drive-m.quark.cn","pan-api.quark.cn","open-api-drive.quark.cn","quark-translation-api-zb.quark.cn","browser-cloud.quark.cn","access-open.quark.cn","open-cms-api.quark.cn","hp-cms.quark.cn","userver.upaas.quark.cn","usync.quark.cn","px.wpk.quark.cn","unpm-upaas.quark.cn","vault.quark.cn","api-album.quark.cn","browser-agent-api.quark.cn","sync-control.quark.cn","drive-social-api.quark.cn","www.quark.cn","quark.cn"};
-    public static string? Classify(string host)=>Sites.FirstOrDefault(s=>s.Domains.Any(d=>host.Equals(d,StringComparison.OrdinalIgnoreCase)||host.EndsWith("."+d,StringComparison.OrdinalIgnoreCase)))?.Id;
+    internal static readonly Dictionary<string,string> AuxiliaryHosts = BuildAuxiliaryHosts();
+    static Dictionary<string,string> BuildAuxiliaryHosts(){
+        var hosts=QuarkControls.ToDictionary(h=>h,_=>"quark",StringComparer.OrdinalIgnoreCase);
+        void Add(string site,params string[] names){foreach(string name in names)hosts[name]=site;}
+        Add("bilibili","www.bilibili.com","api.bilibili.com","passport.bilibili.com");
+        Add("steam","store.steampowered.com","login.steampowered.com","api.steampowered.com","steamcommunity.com");
+        Add("epic","accounts.epicgames.com","account-public-service-prod.ol.epicgames.com");
+        Add("youtube","www.youtube.com","accounts.google.com","youtubei.googleapis.com");
+        return hosts;
+    }
+    public static string? Classify(string host)=>AuxiliaryHosts.GetValueOrDefault(host)??Sites.FirstOrDefault(s=>s.Domains.Any(d=>host.Equals(d,StringComparison.OrdinalIgnoreCase)||host.EndsWith("."+d,StringComparison.OrdinalIgnoreCase)))?.Id;
     internal static bool IsControlHost(string host)=>QuarkControls.Contains(host);
     internal static IEnumerable<string> ControlHosts=>QuarkControls;
-    internal static string? ContentSite(string host)=>QuarkControls.Contains(host)?null:Classify(host);
+    internal static string? ContentSite(string host)=>AuxiliaryHosts.ContainsKey(host)?null:Classify(host);
     internal object[] ServerReport()=>servers.Select(p=>new{host=p.Key,site=serverSites.GetValueOrDefault(p.Key,"global"),ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy)}).Where(x=>x.site!="global"&&!IPAddress.TryParse(x.host,out _)).OrderByDescending(x=>x.ipv4+x.ipv6+x.proxyUnknown).Take(100).Cast<object>().ToArray();
     internal string MainServer(string site)=>servers.Where(p=>serverSites.GetValueOrDefault(p.Key)==site).OrderByDescending(p=>Interlocked.Read(ref p.Value.V4)+Interlocked.Read(ref p.Value.V6)+Interlocked.Read(ref p.Value.Proxy)).Select(p=>p.Key).FirstOrDefault()??"尚无内容连接";
     internal void MarkCaptureLost(){if(!ProtectionLost)ProtectionLossReason="network_core_exited";OwnershipProbe=()=>false;CheckOwnership();}
-    bool CanServe(string site)=>CheckOwnership()||(ProductionPolicies&&ContentTestHost==null&&(site=="global"||!Counters[site].Enabled));
+    bool CanServe(string site)=>CheckOwnership()||(ProductionPolicies&&ContentTestHost==null&&!Counters[site].Enabled);
+    internal void CheckHealth()=>CheckOwnership();
     public async Task Start(bool system=true){
         TestMode=!system;
         if(system){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;}
@@ -120,14 +135,22 @@ internal sealed class DownloadRouter : IAsyncDisposable
     }
     public void Enable(string id,bool on){
         if(ProtectionLost&&on)throw new InvalidOperationException("代理已失效。请先暂停下载，全部关闭后重新开启。");
-        var row=Counters[id];row.Enabled=on;
+        var row=Counters[id];bool previous=row.Enabled;row.Enabled=on;
         try{if(!TestMode){if(Counters.Values.Any(c=>c.Enabled)){
             if(settings.Owned==null&&!ProtectionLost){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;_ = Pac();}
             if(!ProtectionLost){Interlocked.Increment(ref pacRevision);settings.Apply(PacUrl);}
         }else settings.Dispose();}}
-        catch{row.Enabled=false;throw;}
-        row.State=on?(ProductionPolicies&&id=="global"?"IPv6 优先；失败允许原路径":"仅 IPv6；等待内容连接"):"已关闭，允许 IPv4／原代理";
+        catch{row.Enabled=previous;throw;}
+        row.State=on?(row.Mode==ServiceMode.Mixed?"混合保护：内容仅 IPv6":"严格模式：仅 IPv6"):"已关闭，允许 IPv4／原代理";
         foreach(var pair in sessions.Where(p=>p.Value.Site==id))pair.Value.Close();
+    }
+    internal void SetMode(string id,ServiceMode mode){
+        var row=Counters[id];
+        if(row.Mode==mode)return;
+        if(ProtectionLost&&row.Enabled)throw new InvalidOperationException("接管已失效，不能更改已开启服务的模式");
+        row.Mode=mode;
+        row.State=row.Enabled?(mode==ServiceMode.Mixed?"混合保护：内容仅 IPv6":"严格模式：仅 IPv6"):"已关闭，允许 IPv4／原代理";
+        foreach(var s in sessions.Values.Where(s=>s.Site==id))s.Close();
     }
     public void EnableAll(){foreach(var site in Sites)Enable(site.Id,true);}
     int StartNative(string site){var l=new TcpListener(IPAddress.Loopback,0);l.Start();nativeListeners.Add(l);acceptLoops.Add(Task.Run(()=>Accept(l,site)));return ((IPEndPoint)l.LocalEndpoint).Port;}
@@ -147,7 +170,8 @@ internal sealed class DownloadRouter : IAsyncDisposable
         string bypassOriginal=string.Join("||",Bypass.Split(';',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries)
             .Select(p=>p.Equals("<local>",StringComparison.OrdinalIgnoreCase)?"isPlainHostName(host)":"shExpMatch(host,"+JsonSerializer.Serialize(p)+")"));
         if(bypassOriginal.Length>0)original="("+bypassOriginal+")?'DIRECT':("+original+")";
-        result+="if("+string.Join("||",QuarkControls.Select(h=>"host==="+JsonSerializer.Serialize(h)))+")return "+original+";\n";
+        foreach(var group in AuxiliaryHosts.GroupBy(p=>p.Value))
+            result+="if("+string.Join("||",group.Select(p=>"host==="+JsonSerializer.Serialize(p.Key)))+")return "+(Counters[group.Key].Enabled?local:original)+";\n";
         foreach(var site in Sites.Where(s=>s.Id!="global")){
             string match=Match(site.Domains);
             result+="if("+match+")return "+(Counters[site.Id].Enabled?local:original)+";\n";
@@ -284,18 +308,22 @@ internal sealed class DownloadRouter : IAsyncDisposable
         if(!Uri.TryCreate(tunnel?"https://"+first[1]:first[1],UriKind.Absolute,out url)||url.Scheme is not ("http" or "https")||url.UserInfo.Length>0)return;
         string? processSite=ProductionPolicies&&forcedSite==null?Processes.ProxyClientSite(client):null;
         if(processSite!=null)Interlocked.Increment(ref processAttributed);
-        string host=url.IdnHost;var site=forcedSite??processSite??(ProductionPolicies?ContentSite(host):Classify(host))??"global";
-        bool originalControl=ProductionPolicies&&forcedSite==null&&processSite==null&&QuarkControls.Contains(host);
+        string host=url.IdnHost;var site=forcedSite??processSite??Classify(host)??"global";
+        bool auxiliary=ProductionPolicies&&AuxiliaryHosts.GetValueOrDefault(host)==site;
         var row=Counters[site];int id=Interlocked.Increment(ref connectionId);var session=new RelaySession(site,client);sessions[id]=session;
-        bool responseStarted=false;string stage="connect";
+        bool responseStarted=false,originalControl=false;string stage="connect";
         try{
             if(!CanServe(site))throw new IOException("代理设置失效");
             if(ContentTestHost!=null&&(ContentTestStopped||!host.Equals(ContentTestHost,StringComparison.OrdinalIgnoreCase)))throw new IOException("测试已停止或下载域名未验证，已拒绝连接");
-            bool strict=row.Enabled&&!(ProductionPolicies&&site=="global");
+            originalControl=auxiliary&&row.Enabled&&row.Mode==ServiceMode.Mixed;
+            if(originalControl&&row.Auxiliary.Used>=AuxiliaryBudget.Limit)throw new AuxiliaryBudgetException();
+            bool legacyGlobal=ProductionPolicies&&site=="global"&&!row.Enabled;
+            bool strict=row.Enabled&&!originalControl;
             // Login, listing and link issuance must not inherit the unrelated global IPv6 preference.
-            var connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost&&!originalControl,row,url.Scheme,handshake.Token,ProductionPolicies&&site=="global"&&!originalControl);using var upstream=connected.Client;var output=upstream.GetStream();
+            var connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost&&!originalControl,row,url.Scheme,handshake.Token,legacyGlobal);using var upstream=connected.Client;Stream output=upstream.GetStream();
             bool v6=((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.AddressFamily==AddressFamily.InterNetworkV6;
-            strict=row.Enabled&&!(ProductionPolicies&&site=="global");
+            if(originalControl&&(!v6||connected.Proxy))output=new AuxiliaryStream(output,row.Auxiliary);
+            strict=row.Enabled&&!(auxiliary&&row.Mode==ServiceMode.Mixed);
             if(!CanServe(site)||(ContentTestHost!=null&&ContentTestStopped)||(strict&&(!v6||connected.Proxy)))throw new IOException("路由策略已变更，拒绝原路径");
             if(tunnel){responseStarted=true;await input.WriteAsync("HTTP/1.1 200 Connection Established\r\n\r\n"u8.ToArray(),handshake.Token);}
             else{
@@ -314,7 +342,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
             Exception? cause=ex;while(cause!=null&&cause is not SocketException)cause=cause.InnerException;
             string? reason=(ex as IPv6RouteException)?.Reason;
             row.LastFailure=new(DateTime.UtcNow,stage,ex.GetType().Name,reason,(cause as SocketException)?.SocketErrorCode.ToString(),site=="global"?null:host);
-            row.State=ProtectionLost&&row.Enabled?"代理设置失效：未受保护，请暂停下载":row.Enabled&&site!="global"?reason switch{"no_aaaa"=>"此下载域名未查到 IPv6；未回退 IPv4","dns_failed"=>"IPv6 解析失败；未回退 IPv4","ipv6_connect_failed"=>"IPv6 连接失败；未回退 IPv4","selected_node_unavailable"=>"所选节点不可达；请更新节点或恢复自动",_=>"IPv6 传输失败；未回退 IPv4"}:"连接失败："+ex.GetType().Name;
+            row.State=ex is AuxiliaryBudgetException?ex.Message:ProtectionLost&&row.Enabled?"代理设置失效：未受保护，请暂停下载":originalControl?"辅助请求原路径失败；内容仍限 IPv6":row.Enabled?reason switch{"no_aaaa"=>"此下载域名未查到 IPv6；未回退 IPv4","dns_failed"=>"IPv6 解析失败；未回退 IPv4","ipv6_connect_failed"=>"IPv6 连接失败；未回退 IPv4","selected_node_unavailable"=>"所选节点不可达；请更新节点或恢复自动",_=>"IPv6 传输失败；未回退 IPv4"}:"连接失败："+ex.GetType().Name;
             if(!responseStarted)try{using var replyTimeout=new CancellationTokenSource(1000);await input.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"u8.ToArray(),replyTimeout.Token);}catch{}
         }
         finally{sessions.TryRemove(id,out _);}
@@ -337,8 +365,10 @@ internal sealed class DownloadRouter : IAsyncDisposable
     }
     static async Task Pump(Stream source,Stream target,DownloadCounter? row,bool v6,bool proxy,CancellationToken ct,DownloadCounter? server=null,bool upload=false){byte[] buffer=new byte[64*1024];while(true){int n=await source.ReadAsync(buffer,ct);if(n==0)return;foreach(var c in new[]{row,server})if(c!=null){if(upload)CountUpload(c,n,v6,proxy);else if(proxy)Interlocked.Add(ref c.Proxy,n);else if(v6)Interlocked.Add(ref c.V6,n);else Interlocked.Add(ref c.V4,n);}await target.WriteAsync(buffer.AsMemory(0,n),ct);}}
     static void CountUpload(DownloadCounter c,int n,bool v6,bool proxy){if(proxy)Interlocked.Add(ref c.UploadProxy,n);else if(v6)Interlocked.Add(ref c.Upload6,n);else Interlocked.Add(ref c.Upload4,n);}
-    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;foreach(var row in Counters.Values){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;long x=Interlocked.Read(ref row.Upload4),y=Interlocked.Read(ref row.Upload6),z=Interlocked.Read(ref row.UploadProxy);row.UploadRate4=Math.Max(0,x-row.LastUpload4)/seconds;row.UploadRate6=Math.Max(0,y-row.LastUpload6)/seconds;row.UploadRateProxy=Math.Max(0,z-row.LastUploadProxy)/seconds;row.LastUpload4=x;row.LastUpload6=y;row.LastUploadProxy=z;if(ProtectionLost&&row.Enabled)row.State="代理设置失效：未受保护，请暂停下载";}}
-    public void Reset(){foreach(var r in Counters.Values.Concat(servers.Values)){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=r.LastProxy=0;r.Rate4=r.Rate6=r.RateProxy=0;Interlocked.Exchange(ref r.Upload4,0);Interlocked.Exchange(ref r.Upload6,0);Interlocked.Exchange(ref r.UploadProxy,0);r.LastUpload4=r.LastUpload6=r.LastUploadProxy=0;r.UploadRate4=r.UploadRate6=r.UploadRateProxy=0;}}
+    public void Sample(){CheckOwnership();double seconds=Math.Max(.001,(DateTime.UtcNow-sampled).TotalSeconds);sampled=DateTime.UtcNow;SampleCounters(Counters.Values,seconds);foreach(var row in Counters.Values)if(ProtectionLost&&row.Enabled)row.State="代理设置失效：未受保护，请暂停下载";}
+    internal static void SampleCounters(IEnumerable<DownloadCounter> counters,double seconds){foreach(var row in counters){long a=Interlocked.Read(ref row.V4),b=Interlocked.Read(ref row.V6),u=Interlocked.Read(ref row.Proxy);row.Rate4=Math.Max(0,a-row.Last4)/seconds;row.Rate6=Math.Max(0,b-row.Last6)/seconds;row.RateProxy=Math.Max(0,u-row.LastProxy)/seconds;row.Last4=a;row.Last6=b;row.LastProxy=u;long x=Interlocked.Read(ref row.Upload4),y=Interlocked.Read(ref row.Upload6),z=Interlocked.Read(ref row.UploadProxy);row.UploadRate4=Math.Max(0,x-row.LastUpload4)/seconds;row.UploadRate6=Math.Max(0,y-row.LastUpload6)/seconds;row.UploadRateProxy=Math.Max(0,z-row.LastUploadProxy)/seconds;row.LastUpload4=x;row.LastUpload6=y;row.LastUploadProxy=z;}}
+    public void Reset()=>ResetCounters(Counters.Values.Concat(servers.Values));
+    internal static void ResetCounters(IEnumerable<DownloadCounter> counters){foreach(var r in counters){Interlocked.Exchange(ref r.V4,0);Interlocked.Exchange(ref r.V6,0);Interlocked.Exchange(ref r.Proxy,0);r.Last4=r.Last6=r.LastProxy=0;r.Rate4=r.Rate6=r.RateProxy=0;Interlocked.Exchange(ref r.Upload4,0);Interlocked.Exchange(ref r.Upload6,0);Interlocked.Exchange(ref r.UploadProxy,0);r.LastUpload4=r.LastUpload6=r.LastUploadProxy=0;r.UploadRate4=r.UploadRate6=r.UploadRateProxy=0;}}
     public async ValueTask DisposeAsync(){settings.Dispose();stop.Cancel();listener?.Stop();foreach(var l in nativeListeners)l.Stop();foreach(var s in sessions.Values)s.Close();await Task.WhenAll(acceptLoops);if(web!=null){await web.StopAsync();await web.DisposeAsync();}contentDns?.Dispose();stop.Dispose();}
 }
 

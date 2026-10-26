@@ -77,10 +77,10 @@ internal static class RedirectTests
         production.Resolve=h=>Task.FromResult(h.StartsWith("v4")||h=="pan.quark.cn"?Array.Empty<IPAddress>():new[]{IPAddress.IPv6Loopback});
         production.OriginalResolve=_=>Task.FromResult(new[]{IPAddress.Loopback});production.EnableAll();
         using var productionHttp=new HttpClient(new HttpClientHandler{UseProxy=true,Proxy=new WebProxy($"http://127.0.0.1:{production.Port}")}){Timeout=TimeSpan.FromSeconds(10)};
-        bytes=await productionHttp.GetByteArrayAsync($"http://v4.ordinary.example:{port}/");
-        Check(bytes.SequenceEqual(payload)&&production.Counters["global"].V4>=payload.Length,"Production ordinary websites fall back to IPv4");
-        bytes=await productionHttp.GetByteArrayAsync($"http://pan.quark.cn:{port}/");
-        Check(bytes.SequenceEqual(payload)&&production.Counters["quark"].V4==0,"Quark known control API may use IPv4 without contaminating content counter");
+        using(var rejected=await productionHttp.GetAsync($"http://v4.ordinary.example:{port}/"))
+            Check(rejected.StatusCode==HttpStatusCode.BadGateway&&production.Counters["global"].V4==0,"Enabled unknown websites cannot silently fall back to IPv4");
+        using(var rejected=await productionHttp.GetAsync($"http://pan.quark.cn:{port}/"))
+            Check(rejected.StatusCode==HttpStatusCode.BadGateway&&production.Counters["quark"].V4==0,"Strict Quark auxiliary APIs also require IPv6");
         foreach(var host in new[]{"dl-test.quark.cn","test.bilivideo.com","test.googlevideo.com","test.steamcontent.com","download.epicgames.com"}){
             bytes=await productionHttp.GetByteArrayAsync($"http://{host}:{port}/");Check(bytes.SequenceEqual(payload),"Content IPv6 payload verified: "+host);
         }
@@ -91,6 +91,9 @@ internal static class RedirectTests
         string report=JsonSerializer.Serialize(production.ServerReport());Check(!report.Contains("ordinary.example")&&!report.Contains("pan.quark.cn")&&!report.Contains("private="),"Server report excludes ordinary browsing and URL queries");
         production.Reset();Check(production.Counters.Values.All(c=>c.V4+c.V6+c.Proxy==0),"Reset clears all service totals");
         production.MarkCaptureLost();using(var rejected=await productionHttp.GetAsync($"http://dl-test.quark.cn:{port}/"))Check(rejected.StatusCode==HttpStatusCode.BadGateway,"Native capture loss rejects subsequent relay requests");
+        using(var rejected=await productionHttp.GetAsync($"http://v4.recovery.example:{port}/"))
+            Check(rejected.StatusCode==HttpStatusCode.BadGateway,"Capture loss cannot silently relax an enabled global service");
+        production.Enable("global",false);
         bytes=await productionHttp.GetByteArrayAsync($"http://v4.recovery.example:{port}/");Check(bytes.SequenceEqual(payload)&&production.Counters["global"].V4>=payload.Length,"Ordinary websites remain usable through original path after capture loss");
         production.FallbackProxy="127.0.0.1:"+proxyPort;using(var post=await productionHttp.PostAsync($"http://recovery-proxy.example:{port}/upload",new ByteArrayContent(payload)))bytes=await post.Content.ReadAsByteArrayAsync();Check(bytes.SequenceEqual(payload)&&production.Counters["global"].Proxy>=payload.Length,"Capture loss preserves configured original proxy and unknown-exit accounting");
         Check(production.Counters["global"].UploadProxy>=payload.Length&&production.Counters["global"].Upload6==0,"Original proxy upload classified as unknown, not IPv6");
@@ -102,7 +105,7 @@ internal static class RedirectTests
         Check(new DownloadCounter{V6=500,Proxy=700}.ShareText=="已确认 IPv6 41.7%","Unknown proxy bytes included in confirmed IPv6 share denominator");
         await using var tlsFallback=new DownloadRouter{ProductionPolicies=true};await tlsFallback.Start(false);tlsFallback.Resolve=_=>Task.FromResult(new[]{IPAddress.IPv6Loopback});tlsFallback.OriginalResolve=_=>Task.FromResult(new[]{IPAddress.Loopback});tlsFallback.Enable("global",true);
         using var fallbackHttp=new HttpClient(new HttpClientHandler{UseProxy=true,Proxy=new WebProxy($"http://127.0.0.1:{tlsFallback.Port}"),ServerCertificateCustomValidationCallback=(_,c,_,_)=>c?.Thumbprint==cert.Thumbprint}){Timeout=TimeSpan.FromSeconds(10)};
-        bytes=await fallbackHttp.GetByteArrayAsync($"https://ordinary.example:{tlsPort}/");Check(bytes.SequenceEqual(payload)&&tlsFallback.Counters["global"].V4>=payload.Length,"Ordinary HTTPS IPv6 certificate preflight failure allows original-path fallback");
+        bytes=await fallbackHttp.GetByteArrayAsync($"https://ordinary.example:{tlsPort}/");Check(bytes.SequenceEqual(payload)&&tlsFallback.Counters["global"].V6>=payload.Length&&tlsFallback.Counters["global"].V4==0,"Enabled ordinary HTTPS preserves end-to-end TLS without IPv4 fallback");
 
     }).GetAwaiter().GetResult();File.WriteAllText(path,JsonSerializer.Serialize(new{state="passed",checks},new JsonSerializerOptions{WriteIndented=true}));}catch(Exception ex){File.WriteAllText(path,JsonSerializer.Serialize(new{state="failed",checks,error=ex.ToString()},new JsonSerializerOptions{WriteIndented=true}));Environment.ExitCode=1;}}
     public static void Owner(string ready){Task.Run(async()=>{await using var r=new DownloadRouter();await r.Start();r.EnableAll();File.WriteAllText(ready,r.PacUrl);Console.ReadLine();}).GetAwaiter().GetResult();}

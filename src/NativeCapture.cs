@@ -28,10 +28,12 @@ internal sealed class NativeCapture : IAsyncDisposable
         ["dns"]=new Dictionary<string,object>{["enable"]=true,["ipv6"]=true,["enhanced-mode"]="redir-host",["nameserver"]=new[]{"system://"},["direct-nameserver"]=new[]{"system://"}},
         ["sniffer"]=new Dictionary<string,object>{["enable"]=true,["parse-pure-ip"]=true,["force-dns-mapping"]=true,["override-destination"]=true,["sniff"]=new{HTTP=new{ports=new[]{80,8080}},TLS=new{ports=new[]{443}},QUIC=new{ports=new[]{443}}}},
         ["proxies"]=new object[]{new{name="BrowserRelay",type="http",server="127.0.0.1",port=router.Port},new{name="SteamRelay",type="http",server="127.0.0.1",port=router.SteamPort},new{name="EpicRelay",type="http",server="127.0.0.1",port=router.EpicPort},
-            new Dictionary<string,object>{["name"]="IPv6Origin",["type"]="direct",["ip-version"]="ipv6"}},
+            new Dictionary<string,object>{["name"]="IPv6Origin",["type"]="direct",["ip-version"]="ipv6"},
+            new Dictionary<string,object>{["name"]="IPv4Origin",["type"]="direct",["ip-version"]="ipv4"}},
         ["rules"]=new[]{
             // Sniffing can erase DstIP. The origin socket's source family survives it.
             "AND,((PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+"),(SRC-IP-CIDR,::/0)),IPv6Origin",
+            "AND,((PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+"),(SRC-IP-CIDR,0.0.0.0/0)),IPv4Origin",
             "PROCESS-NAME,"+Path.GetFileName(Environment.ProcessPath!)+",DIRECT","PROCESS-NAME,mihomo.exe,DIRECT","PROCESS-NAME,verge-mihomo.exe,DIRECT","PROCESS-NAME,verge-mihomo-alpha.exe,DIRECT","PROCESS-NAME,clash.exe,DIRECT","PROCESS-NAME,sing-box.exe,DIRECT",
             "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve","IP-CIDR,10.0.0.0/8,DIRECT,no-resolve","IP-CIDR,172.16.0.0/12,DIRECT,no-resolve","IP-CIDR,192.168.0.0/16,DIRECT,no-resolve","IP-CIDR6,::1/128,DIRECT,no-resolve","IP-CIDR6,fe80::/10,DIRECT,no-resolve",
             "AND,((PROCESS-NAME,steam.exe),(NETWORK,UDP),(DST-PORT,443)),REJECT",
@@ -64,7 +66,7 @@ internal sealed class NativeCapture : IAsyncDisposable
                     r.EndsWith(",EpicRelay",StringComparison.Ordinal)||r.Contains("PROCESS-NAME,Epic",StringComparison.Ordinal)?"epic":null;
                 return site==null?r:r[..(r.LastIndexOf(',')+1)]+ServiceGroup(site);
             }).ToList();
-        rules.InsertRange(2,DownloadRouter.ControlHosts.Select(h=>"DOMAIN,"+h+",DIRECT"));
+        rules.InsertRange(3,DownloadRouter.AuxiliaryHosts.Select(p=>"DOMAIN,"+p.Key+","+ServiceGroup(p.Value)));
         foreach(var site in DownloadRouter.Sites.Where(s=>s.Id!="global"))
             rules.AddRange(site.Domains.Select(d=>"DOMAIN-SUFFIX,"+d+","+ServiceGroup(site.Id)));
         rules.Add("MATCH,DIRECT");
@@ -84,16 +86,23 @@ internal sealed class NativeCapture : IAsyncDisposable
             if(state.RootElement.GetProperty("now").GetString()!=(router.Counters[id].Enabled?RelayFor(id):"DIRECT"))
                 throw new IOException("服务路由切换未确认");
         }
+        Status="服务新连接策略已确认";
         // Existing native connections retain their original outbound until closed.
-        var groups=ids.Where(id=>id!="global").Select(ServiceGroup).ToHashSet();
-        using var connections=await api.GetAsync("/connections");connections.EnsureSuccessStatusCode();
-        using var data=JsonDocument.Parse(await connections.Content.ReadAsStringAsync());
-        if(data.RootElement.TryGetProperty("connections",out var rows)&&rows.ValueKind==JsonValueKind.Array)
-            foreach(var row in rows.EnumerateArray())
-                if(row.GetProperty("chains").EnumerateArray().Any(c=>groups.Contains(c.GetString()??""))){
-                    using var closed=await api.DeleteAsync("/connections/"+Uri.EscapeDataString(row.GetProperty("id").GetString()!));
-                    if(closed.StatusCode!=System.Net.HttpStatusCode.NotFound)closed.EnsureSuccessStatusCode();
-                }
+        try{
+            var groups=ids.Where(id=>id!="global").Select(ServiceGroup).ToHashSet();
+            using var connections=await api.GetAsync("/connections");connections.EnsureSuccessStatusCode();
+            using var data=JsonDocument.Parse(await connections.Content.ReadAsStringAsync());
+            if(data.RootElement.TryGetProperty("connections",out var rows)&&rows.ValueKind==JsonValueKind.Array)
+                foreach(var row in rows.EnumerateArray())
+                    if(row.GetProperty("chains").EnumerateArray().Any(c=>groups.Contains(c.GetString()??""))){
+                        using var closed=await api.DeleteAsync("/connections/"+Uri.EscapeDataString(row.GetProperty("id").GetString()!));
+                        if(closed.StatusCode!=System.Net.HttpStatusCode.NotFound)closed.EnsureSuccessStatusCode();
+                    }
+        }catch(Exception ex)when(ex is HttpRequestException or OperationCanceledException or JsonException){
+            if(ids.Any(id=>router.Counters[id].Enabled))
+                throw new IOException("旧连接未确认关闭，开启未完成；请暂停下载后重试",ex);
+            Status="服务新连接策略已确认；旧连接清理未完成，请暂停后重试";
+        }
     }
     static int FreePort(){using var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();return ((IPEndPoint)listener.LocalEndpoint).Port;}
     public async Task Start(DownloadRouter router,bool tun=true,Action<Dictionary<string,object>>? testConfigure=null){
@@ -116,7 +125,7 @@ internal sealed class NativeCapture : IAsyncDisposable
         // Drain but never persist raw network logs (may contain private hosts).
         void Drain(string? line){if(testConfigure!=null&&line!=null){TestLog.Enqueue(line);while(TestLog.Count>40)TestLog.TryDequeue(out _);}}
         process.OutputDataReceived+=(_,e)=>Drain(e.Data);process.ErrorDataReceived+=(_,e)=>Drain(e.Data);process.BeginOutputReadLine();process.BeginErrorReadLine();
-        api=new HttpClient(new HttpClientHandler{UseProxy=false,AllowAutoRedirect=false}){BaseAddress=new Uri("http://127.0.0.1:"+port),Timeout=TimeSpan.FromSeconds(1)};api.DefaultRequestHeaders.Authorization=new("Bearer",secret);
+        api=new HttpClient(new HttpClientHandler{UseProxy=false,AllowAutoRedirect=false}){BaseAddress=new Uri("http://127.0.0.1:"+port),Timeout=TimeSpan.FromSeconds(3)};api.DefaultRequestHeaders.Authorization=new("Bearer",secret);
         for(int i=0;i<30;i++){if(process.HasExited)throw new IOException("网络内核启动失败");try{using var r=await api.GetAsync("/configs");r.EnsureSuccessStatusCode();using var data=JsonDocument.Parse(await r.Content.ReadAsStringAsync());if(!tun||(data.RootElement.GetProperty("tun").GetProperty("enable").GetBoolean()&&System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Name=="IPv6Lens-TUN"&&n.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up))){Status=tun?"原生客户端接管已开启":"内核配置检查通过";return;}}catch{}await Task.Delay(200);}
         throw new IOException("网络内核未就绪");
     }
