@@ -114,7 +114,7 @@ internal sealed class NativeCapture : IAsyncDisposable
         if(!File.Exists(CorePath))throw new IOException("缺少 core/mihomo.exe");
         // Refuse competing TUNs; do not edit any external application's config.
         if(tun){var active=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up&&(n.Name.Contains("Mihomo",StringComparison.OrdinalIgnoreCase)||n.Name.Contains("Clash",StringComparison.OrdinalIgnoreCase)||n.Name.Equals("Meta",StringComparison.OrdinalIgnoreCase)||n.Description.Contains("Meta Tunnel",StringComparison.OrdinalIgnoreCase)||n.Name.Contains("IPv6Lens-TUN",StringComparison.OrdinalIgnoreCase)));if(active)throw new IOException("检测到其他 TUN 正在运行，未叠加接管");}
-        if(tun)router.Nodes.InterfaceIndex=NodeNetwork.CaptureInterface();
+        if(tun){router.Nodes.InterfaceIndex=NodeNetwork.CaptureInterface();router.AuxiliaryInterfaceIndex=NodeNetwork.CaptureIPv4Interface();}
         folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","core",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
         int port=FreePort();string secret=Convert.ToHexString(RandomNumberGenerator.GetBytes(24));string config=Path.Combine(folder,"config.json");
         var generated=(Dictionary<string,object>)Config(router,port,secret,tun);testConfigure?.Invoke(generated);

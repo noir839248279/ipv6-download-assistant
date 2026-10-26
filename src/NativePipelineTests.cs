@@ -90,7 +90,9 @@ internal static class NativePipelineTests
                 await router.Start(false);
                 router.FallbackProxy="127.0.0.1:"+proxyPort;
                 router.Resolve=_=>Task.FromResult(new[]{IPAddress.IPv6Loopback});
+                router.OriginalResolve=_=>Task.FromResult(new[]{IPAddress.Loopback});
                 router.Enable("bilibili",true);router.SetMode("bilibili",ServiceMode.Mixed);
+                router.Enable("quark",true);router.SetMode("quark",ServiceMode.Mixed);
                 using var free=new TcpListener(IPAddress.Loopback,0);free.Start();
                 int corePort=((IPEndPoint)free.LocalEndpoint).Port;free.Stop();
                 await using var dns=new RoutingRecoveryTests.FixtureDns();
@@ -132,6 +134,9 @@ internal static class NativePipelineTests
                     await Probe(router.Port,"www.bilibili.com");
                     await Probe(corePort,"www.bilibili.com");
                     await Probe(corePort,"pipeline.bilivideo.com");
+                    await Probe(corePort,"px.wpk.quark.cn");
+                    Check(router.Counters["quark"].V4>0&&router.Counters["quark"].Proxy==0&&router.Counters["quark"].Auxiliary.Used>0,
+                        "Exact Quark auxiliary HTTPS bypasses original proxy with metered IPv4");
                     Check(proxyConnections==2&&router.Counters["bilibili"].Proxy>0&&router.Counters["bilibili"].V4==0,
                         "Auxiliary HTTPS uses original proxy with unknown-exit accounting");
                     Check(router.Counters["bilibili"].V6>0,"Content HTTPS remains actual IPv6 without original-proxy fallback");

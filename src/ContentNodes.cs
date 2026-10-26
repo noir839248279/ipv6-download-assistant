@@ -186,6 +186,42 @@ internal static class NodeNetwork
 {
     internal const int ByteLimit = 4 * 1024 * 1024;
     [DllImport("iphlpapi.dll")] static extern uint GetBestInterfaceEx(byte[] address, out uint index);
+    internal static int CaptureIPv4Interface()
+    {
+        var address = new IPEndPoint(IPAddress.Parse("223.5.5.5"), 443).Serialize();
+        var bytes = new byte[address.Size];
+        for (int i = 0; i < bytes.Length; i++) bytes[i] = address[i];
+        return GetBestInterfaceEx(bytes, out uint index) == 0 && PhysicalIPv4Interface((int)index) != null ? (int)index : 0;
+    }
+    static NetworkInterface? PhysicalIPv4Interface(int index) => NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n =>
+    {
+        try
+        {
+            return n.OperationalStatus == OperationalStatus.Up &&
+                n.NetworkInterfaceType is NetworkInterfaceType.Ethernet or NetworkInterfaceType.Wireless80211 &&
+                !n.Name.Contains("TUN", StringComparison.OrdinalIgnoreCase) &&
+                !n.Description.Contains("Tunnel", StringComparison.OrdinalIgnoreCase) &&
+                n.GetIPProperties().GetIPv4Properties()?.Index == index;
+        }
+        catch (NetworkInformationException) { return false; }
+    });
+    internal static async Task<TcpClient> ConnectIPv4(IPAddress ip, int port, int interfaceIndex, CancellationToken ct)
+    {
+        if (ip.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.Any))
+            throw new IOException("辅助目标不是可用 IPv4 地址");
+        var nic = PhysicalIPv4Interface(interfaceIndex) ?? throw new IOException("原 IPv4 出口不可用");
+        var client = new TcpClient(AddressFamily.InterNetwork);
+        try
+        {
+            // Windows IP_UNICAST_IF takes the IPv4 interface index in network byte order.
+            client.Client.SetSocketOption(SocketOptionLevel.IP, (SocketOptionName)31, IPAddress.HostToNetworkOrder(interfaceIndex));
+            await client.ConnectAsync(ip, port, ct);
+            var local = ((IPEndPoint)client.Client.LocalEndPoint!).Address;
+            if (!nic.GetIPProperties().UnicastAddresses.Any(a => a.Address.Equals(local))) throw new IOException("辅助出口验证失败");
+            return client;
+        }
+        catch { client.Dispose(); throw; }
+    }
     internal static int CaptureInterface()
     {
         var address = new IPEndPoint(IPAddress.Parse("2001:4860:4860::8888"), 443).Serialize();
