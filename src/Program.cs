@@ -21,6 +21,7 @@ internal static class Program
         if(args.Length==2&&args[0]=="--relay-lifetime-test"){RelayLifetimeTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--auxiliary-route-test"){AuxiliaryRouteTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--auxiliary-interface-test"){AuxiliaryRouteTests.RunInterface(args[1]);return;}
+        if(args.Length==2&&args[0]=="--auxiliary-admission-test"){AuxiliaryAdmissionTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-delivery-test"){string prefix=args[1];NativeTests.Suite(prefix+".suite.json");if(Environment.ExitCode!=0)return;args=new[]{"--ui-native-test",prefix+".png"};}
         if(args.Length==2&&args[0]=="--platform-probes"){PlatformProbes.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-config-test"){NativeTests.ConfigTest(args[1]);return;}

@@ -52,6 +52,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     readonly ConcurrentDictionary<string,(DateTime Time,IPAddress[] Addresses)> dns=new();
     readonly ConcurrentDictionary<string,DateTime> ordinaryTls=new();
     readonly SemaphoreSlim limit=new(128);
+    readonly AuxiliaryAdmission auxiliaryAdmission=new(AuxiliaryHosts.Keys);
     readonly List<Task> acceptLoops=new();
     sealed class ListenerProgress(string name)
     {
@@ -62,6 +63,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     sealed class WorkProgress(string listener)
     {
         internal readonly string Listener=listener;
+        internal string? Site,Host;
         internal sealed record Step(string Stage,DateTime SinceUtc);
         internal volatile Step Current=new("queued",DateTime.UtcNow);
         internal void At(string stage)=>Current=new(stage,DateTime.UtcNow);
@@ -119,8 +121,9 @@ internal sealed class DownloadRouter : IAsyncDisposable
         listeners=listeners.Select(l=>new{listener=l.Name,accepted=Interlocked.Read(ref l.Accepted),
             lastAcceptedUtc=Interlocked.Read(ref l.LastAcceptedTicks) is long t&&t>0?(DateTime?)new DateTime(t,DateTimeKind.Utc):null,
             rejected=Interlocked.Read(ref l.Rejected),taskStatus=l.Loop?.Status.ToString(),fault=l.Loop?.Exception?.GetBaseException().GetType().Name}).ToArray(),
-        work=pendingWork.Values.Select(p=>new{p.Listener,Step=p.Current}).GroupBy(p=>new{p.Listener,p.Step.Stage})
-            .Select(g=>new{listener=g.Key.Listener,stage=g.Key.Stage,count=g.Count(),oldestSeconds=Math.Max(0,(DateTime.UtcNow-g.Min(p=>p.Step.SinceUtc)).TotalSeconds)}).ToArray(),
+        work=pendingWork.Values.Select(p=>new{p.Listener,p.Site,p.Host,Step=p.Current}).GroupBy(p=>new{p.Listener,p.Site,p.Host,p.Step.Stage})
+            .Select(g=>new{listener=g.Key.Listener,site=g.Key.Site,host=g.Key.Host,stage=g.Key.Stage,count=g.Count(),oldestSeconds=Math.Max(0,(DateTime.UtcNow-g.Min(p=>p.Step.SinceUtc)).TotalSeconds)}).ToArray(),
+        auxiliaryAdmission=auxiliaryAdmission.Snapshot(),
         ingress=ingressDiagnostics?.Status()};
     internal object IngressSnapshot()=>new{health=Health(),recentRoutes=RecentRoutes(),
         services=Counters.Select(p=>new{id=p.Key,enabled=p.Value.Enabled,mode=p.Value.Mode.ToString(),
@@ -376,13 +379,25 @@ internal sealed class DownloadRouter : IAsyncDisposable
         }
         bool tunnel=first[0]=="CONNECT";Uri? url;
         if(!Uri.TryCreate(tunnel?"https://"+first[1]:first[1],UriKind.Absolute,out url)||url.Scheme is not ("http" or "https")||url.UserInfo.Length>0)return;
+        string host=url.IdnHost;
+        AuxiliaryAdmission.Lease? auxiliaryLease=null;
+        string? auxiliarySite=AuxiliaryHosts.GetValueOrDefault(host);
+        if(ProductionPolicies&&auxiliarySite!=null&&Counters[auxiliarySite].Enabled&&
+            !auxiliaryAdmission.TryEnter(host,out auxiliaryLease,out int retrySeconds)){
+            work.At("auxiliary_throttled");
+            Counters[auxiliarySite].State="辅助请求繁忙或冷却中；未放开 IPv4";
+            await input.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 503 Service Unavailable\r\nRetry-After: {retrySeconds}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),handshake.Token);
+            return;
+        }
+        using var admission=auxiliaryLease;
         work.At("process_attribution");
         string? processSite=ProductionPolicies&&forcedSite==null?Processes.ProxyClientSite(client):null;
         if(processSite!=null)Interlocked.Increment(ref processAttributed);
-        string host=url.IdnHost;var site=forcedSite??processSite??Classify(host)??"global";
+        var site=forcedSite??processSite??Classify(host)??"global";
+        work.Site=site;work.Host=site=="global"?null:host;
         bool auxiliary=ProductionPolicies&&AuxiliaryHosts.GetValueOrDefault(host)==site;
         var row=Counters[site];int id=Interlocked.Increment(ref connectionId);var session=new RelaySession(site,client);sessions[id]=session;
-        bool responseStarted=false,originalControl=false,auxiliaryV6Only=false,directAuxiliary=false;string stage="connect";
+        bool responseStarted=false,originalControl=false,auxiliaryV6Only=false,directAuxiliary=false,upstreamEstablished=false;string stage="connect";
         try{
             work.At("ownership_before_connect");
             if(!CanServe(site))throw new IOException("代理设置失效");
@@ -400,6 +415,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
                 else connected=await Connect(host,url.Port,row.Enabled&&!ProtectionLost&&(!originalControl||auxiliaryV6Only),row,url.Scheme,handshake.Token,legacyGlobal);
             }
             catch(IPv6RouteException)when(auxiliaryV6Only){throw new AuxiliaryBudgetException();}
+            upstreamEstablished=true;admission?.Connected();
             using var upstream=connected.Client;Stream output=upstream.GetStream();
             bool v6=((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.AddressFamily==AddressFamily.InterNetworkV6;
             TraceRoute(site,originalControl?"auxiliary":"content",host,connected.Proxy?"Unknown":v6?"IPv6":"IPv4",
@@ -423,6 +439,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
             await Relay(input,output,client.Client,upstream.Client,row,v6,connected.Proxy,lifetime.Token,server);
         }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException or TimeoutException or ObjectDisposedException or HttpRequestException or System.Text.Json.JsonException){
             if(session.IntentionalClose||stop.IsCancellationRequested)return;
+            if(originalControl&&!auxiliaryV6Only&&!upstreamEstablished&&!ProtectionLost)admission?.ConnectFailed();
             Interlocked.Increment(ref row.Failures);
             Exception? cause=ex;while(cause!=null&&cause is not SocketException)cause=cause.InnerException;
             string? reason=(ex as IPv6RouteException)?.Reason;
