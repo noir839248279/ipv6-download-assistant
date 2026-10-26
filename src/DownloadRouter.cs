@@ -235,7 +235,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         string httpOriginal=JsonSerializer.Serialize(ProxyFor("http"));
         string original="url.substring(0,6)==='https:'?"+httpsOriginal+":"+httpOriginal;
         string Match(IEnumerable<string> domains)=>string.Join("||",domains.Select(d=>"host==="+JsonSerializer.Serialize(d)+"||dnsDomainIs(host,"+JsonSerializer.Serialize("."+d)+")"));
-        string result="function FindProxyForURL(url,host){host=host.toLowerCase();if(isPlainHostName(host)||shExpMatch(host,'127.*')||shExpMatch(host,'10.*')||shExpMatch(host,'192.168.*')||shExpMatch(host,'169.254.*')||/^172[.](1[6-9]|2[0-9]|3[01])[.][0-9]+[.][0-9]+$/.test(host)||host==='::1'||host==='[::1]')return 'DIRECT';\n";
+        string result=LocalNetwork.PacFunctions+"\nfunction FindProxyForURL(url,host){host=host.toLowerCase().replace(/[.]$/,'');if(isPlainHostName(host)||lensLocalAddress(host))return 'DIRECT';\n";
         string bypassOriginal=string.Join("||",Bypass.Split(';',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries)
             .Select(p=>p.Equals("<local>",StringComparison.OrdinalIgnoreCase)?"isPlainHostName(host)":"shExpMatch(host,"+JsonSerializer.Serialize(p)+")"));
         if(bypassOriginal.Length>0)original="("+bypassOriginal+")?'DIRECT':("+original+")";
@@ -245,6 +245,9 @@ internal sealed class DownloadRouter : IAsyncDisposable
             string match=Match(site.Domains);
             result+="if("+match+")return "+(Counters[site.Id].Enabled?local:original)+";\n";
         }
+        // With global capture off, preserve the original proxy path without
+        // adding synchronous DNS work to every unrelated website.
+        if(Counters["global"].Enabled)result+="if(lensLocalHost(host))return 'DIRECT';\n";
         result+="if(url.substring(0,5)==='http:'||url.substring(0,6)==='https:')return "+(Counters["global"].Enabled?local:original)+";return 'DIRECT';}";
         return result;
     }
@@ -284,6 +287,30 @@ internal sealed class DownloadRouter : IAsyncDisposable
         throw new IOException("辅助 IPv4 直连不可用",last);
     }
     async Task<(TcpClient Client,bool Proxy)> Connect(string host,int port,bool preferV6,DownloadCounter row,string scheme,CancellationToken ct,bool allowFallback=false){
+        // PAC caches and native proxy callers can still send local names here.
+        // Resolve unknown destinations with the network's DNS, not public CDN DNS.
+        IPAddress[]? originalAddresses=null;
+        if(ProductionPolicies&&Classify(host)==null){
+            try{originalAddresses=await OriginalResolve(host).WaitAsync(TimeSpan.FromSeconds(5),ct);}
+            catch(Exception ex)when(ex is SocketException or TimeoutException or HttpRequestException or TaskCanceledException){ct.ThrowIfCancellationRequested();}
+            var local=(originalAddresses??Array.Empty<IPAddress>()).Where(LocalNetwork.Contains).Distinct().Take(4).ToArray();
+            if(port==Port&&local.Any(IPAddress.IsLoopback))throw new IOException("不能转发到自身");
+            if(local.Length>0){
+                Exception? localError=null;
+                foreach(var ip in local){
+                    var direct=new TcpClient(ip.AddressFamily);
+                    try{
+                        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(2500);
+                        await direct.ConnectAsync(ip,port,timeout.Token);
+                        row.State="本地网络直连";row.Server=host;return(direct,false);
+                    }catch(Exception ex)when(ex is SocketException or IOException or OperationCanceledException){
+                        direct.Dispose();ct.ThrowIfCancellationRequested();localError=ex;
+                    }
+                }
+                // Never turn a failed private destination into an external proxy request.
+                throw new IOException("本地网络目标不可达",localError);
+            }
+        }
         if(preferV6&&ProductionPolicies&&port==443&&Nodes.Selected(host) is IPAddress chosen){
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(4000);
             try{
@@ -338,7 +365,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         string proxy=ProxyFor(scheme);
         if(proxy!="DIRECT"){
             var target=new Uri("http://"+proxy[6..]);var c=new TcpClient();try{await c.ConnectAsync(target.Host,target.Port,ct);var stream=c.GetStream();await stream.WriteAsync(Encoding.ASCII.GetBytes($"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"),ct);var reply=Encoding.ASCII.GetString(await Header(stream,ct));if(!reply.Split('\r')[0].Contains(" 200 "))throw new IOException("原代理连接失败");row.State=preferV6?"IPv6 不可达，已回退原代理（出口协议未知）":"原代理路径（出口协议未知）";row.Server=host;return(c,true);}catch{c.Dispose();throw;}}
-        if(ProductionPolicies)addresses=await OriginalResolve(host).WaitAsync(TimeSpan.FromSeconds(5),ct);
+        if(ProductionPolicies)addresses=originalAddresses??await OriginalResolve(host).WaitAsync(TimeSpan.FromSeconds(5),ct);
         if(port==Port&&addresses.Any(IPAddress.IsLoopback))throw new IOException("不能转发到自身");
         foreach(var ip in addresses.OrderBy(a=>a.AddressFamily==AddressFamily.InterNetwork?0:1).Take(6)){var c=new TcpClient(ip.AddressFamily);try{using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(2500);await c.ConnectAsync(ip,port,timeout.Token);row.State=ip.AddressFamily==AddressFamily.InterNetworkV6?"正在使用 IPv6":"IPv6 不可用，实际使用 IPv4";row.Server=host;return(c,false);}catch{c.Dispose();}}
         throw new IOException("IPv6 和原连接均不可达");
@@ -424,7 +451,6 @@ internal sealed class DownloadRouter : IAsyncDisposable
             auxiliaryV6Only=originalControl&&row.Auxiliary.Used>=row.Auxiliary.Capacity;
             directAuxiliary=originalControl&&!auxiliaryV6Only&&DirectAuxiliaryHost(host);
             bool legacyGlobal=ProductionPolicies&&site=="global"&&!row.Enabled;
-            bool strict=row.Enabled&&(!originalControl||auxiliaryV6Only);
             // Login, listing and link issuance must not inherit the unrelated global IPv6 preference.
             (TcpClient Client,bool Proxy) connected;
             work.At("upstream_connect");
@@ -436,10 +462,11 @@ internal sealed class DownloadRouter : IAsyncDisposable
             upstreamEstablished=true;admission?.Connected();
             using var upstream=connected.Client;Stream output=upstream.GetStream();
             bool v6=((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.AddressFamily==AddressFamily.InterNetworkV6;
-            TraceRoute(site,originalControl?"auxiliary":"content",host,connected.Proxy?"Unknown":v6?"IPv6":"IPv4",
+            bool localAccess=!connected.Proxy&&Classify(host)==null&&LocalNetwork.Contains(((IPEndPoint)upstream.Client.RemoteEndPoint!).Address);
+            TraceRoute(site,localAccess?"local":originalControl?"auxiliary":"content",host,connected.Proxy?"Unknown":v6?"IPv6":"IPv4",
                 connected.Proxy?null:((IPEndPoint)upstream.Client.RemoteEndPoint!).Address.ToString());
             if(originalControl&&(!v6||connected.Proxy))output=new AuxiliaryStream(output,row.Auxiliary);
-            strict=row.Enabled&&(!(auxiliary&&row.Mode==ServiceMode.Mixed)||auxiliaryV6Only);
+            bool strict=!localAccess&&row.Enabled&&(!(auxiliary&&row.Mode==ServiceMode.Mixed)||auxiliaryV6Only);
             work.At("ownership_after_connect");
             if(!CanServe(site)||(ContentTestHost!=null&&ContentTestStopped)||(strict&&(!v6||connected.Proxy)))throw new IOException("路由策略已变更，拒绝原路径");
             work.At("client_response");

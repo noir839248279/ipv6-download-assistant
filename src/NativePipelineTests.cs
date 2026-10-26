@@ -126,7 +126,8 @@ internal static class NativePipelineTests
                     catch(Exception ex)
                     {
                         throw new IOException("Pipeline failure: "+JsonSerializer.Serialize(new{componentErrors,
-                            health=router.Health(),routes=router.RecentRoutes(),proxyConnections}),ex);
+                            health=router.Health(),routes=router.RecentRoutes(),proxyConnections,
+                            coreExit=core.ExitCode,coreLog=core.TestLog.ToArray()}),ex);
                     }
                 }
                 try

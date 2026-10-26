@@ -7,6 +7,8 @@ internal static class Program
     public static bool Admin => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
     [STAThread] static void Main(string[] args)
     {
+        if(args.Length==2&&args[0]=="--local-network-test"){LocalNetworkTests.Run(args[1]);return;}
+        if(args.Length==3&&args[0]=="--local-network-probe"){LocalNetworkTests.Probe(args[1],args[2]);return;}
         if(args.Length==2&&args[0]=="--routing-recovery-test"){RoutingRecoveryTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--node-test"){NodeTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--node-live-test"){NodeTests.Live(args[1]);return;}
