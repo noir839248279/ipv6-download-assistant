@@ -15,6 +15,7 @@ internal static class Program
         if(args.Length==2&&args[0]=="--routing-recovery-test"){RoutingRecoveryTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--content-dns-test"){ContentDnsTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--node-test"){NodeTests.Run(args[1]);return;}
+        if(args.Length==2&&args[0]=="--node-optimization-test"){NodeOptimizationTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--node-live-test"){NodeTests.Live(args[1]);return;}
         if(args.Length==2&&args[0]=="--native-egress-test"){NativeEgressTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--relay-policy-test"){RelayPolicyTests.Run(args[1]);return;}
@@ -63,6 +64,7 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         if(args.Length==2&&args[0]=="--traffic-share-test"){TrafficShareTests.Run(args[1]);return;}
         if(args.Length==2&&args[0]=="--node-ui-test"){NodeForm.UiTest(args[1]);return;}
+        if(args.Length==2&&args[0]=="--alist-resource-ui-test"){AlistResourceForm.UiTest(args[1]);return;}
         bool dashboardTest=args.Length==2&&args[0]=="--dashboard-test";
         bool uiSmoke=dashboardTest||args.Length==2&&args[0] is "--ui-smoke" or "--ui-smoke-loss" or "--ui-smoke-split";
         bool uiNative=args.Length==2&&args[0]=="--ui-native-test";

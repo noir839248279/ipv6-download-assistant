@@ -20,6 +20,8 @@ internal static class NodeTests
         }
         try
         {
+            Check(NodeNetwork.ByteLimit == 2 * 1024 * 1024,
+                "Each explicit speed sample is bounded to 2 MiB");
             const string host = "dl-test.quark.cn";
             var a = IPAddress.Parse("2001:db8::10");
             var b = IPAddress.Parse("2001:db8::20");
@@ -75,7 +77,7 @@ internal static class NodeTests
             using (var data = new MemoryStream(new byte[NodeNetwork.ByteLimit + 100]))
             {
                 var speed = await NodeNetwork.ReadSpeed(data, NodeNetwork.ByteLimit, Stopwatch.StartNew(), CancellationToken.None, CancellationToken.None);
-                Check(data.Position == NodeNetwork.ByteLimit && speed.BytesPerSecond > 0, "Speed probe reads no more than its 4 MiB bound");
+                Check(data.Position == NodeNetwork.ByteLimit && speed.BytesPerSecond > 0, "Speed probe reads no more than its 2 MiB bound");
             }
             using (var shortBody = new MemoryStream(new byte[1024]))
             {
@@ -128,6 +130,13 @@ internal static class NodeTests
         var serving = Serve(origin, false);
         await using var router = new DownloadRouter { ProductionPolicies = true };
         await router.Start(false);
+        router.Enable("global", false);
+        check(!router.Nodes.ProbeAllowed("cdn.example.net"), "Custom content probes cannot bypass the disabled global category");
+        router.Enable("global", true);
+        check(router.Nodes.ProbeAllowed("cdn.example.net"), "Custom content optimization follows the enabled global category");
+        router.Nodes.ProbeReceived!("cdn.example.net", 7);
+        check(router.Counters["global"].V6 == 7, "Custom probe bytes are counted under the global IPv6 service");
+        router.Enable("global", false);
         router.FallbackProxy = "127.0.0.1:" + ((IPEndPoint)proxy.LocalEndpoint).Port;
         router.Resolve = _ => { dnsQueries++; throw new SocketException(); };
         router.Nodes.Lookup = (_, _) => Task.FromResult(new[] { new NodeAddress(chosen, DateTime.UtcNow.AddMinutes(2), "fixture") });
@@ -153,6 +162,53 @@ internal static class NodeTests
         router.NodeConnector = (_, _, _) => throw new IOException("Fixture selected node unavailable");
         using (var failed = await http.GetAsync("http://" + host + ":443/"))
             check(failed.StatusCode == HttpStatusCode.BadGateway && !proxy.Pending(), "Selected-node failure never silently falls back");
+        router.Nodes.Automatic(host);
+        router.Nodes.NetworkIdentity = () => "fixture-network";
+        router.Nodes.SpeedProbe = (_, _, _, _) => Task.FromResult(new NodeSpeed(1000, "fixture"));
+        await router.Nodes.Optimize(host, new Uri("https://" + host + "/fixture"), new Dictionary<string, string>(), null, ct);
+        var optimizedServing = Serve(origin, false);
+        router.NodeConnector = async (ip, port, token) =>
+        {
+            check(ip.Equals(chosen) && port == 443, "Automatic preference dials the exact measured IPv6 destination");
+            var client = new TcpClient(AddressFamily.InterNetworkV6);
+            await client.ConnectAsync(IPAddress.IPv6Loopback, ((IPEndPoint)origin.LocalEndpoint).Port, token);
+            return client;
+        };
+        check(await http.GetStringAsync("http://" + host + ":443/") == "ok",
+            "Automatic optimization routes actual payload without changing a signed origin");
+        await optimizedServing;
+        check(router.RecentRoutes().Any(r => r.Event == "optimized_node") && dnsQueries == 0 &&
+            router.Counters["quark"].V4 == 0 && originalRequests == 0,
+            "The applied preference is observable and never silently uses IPv4 or the original proxy");
+        router.Nodes.Select(host, chosen);
+        var manualServing = Serve(origin, false);
+        check(await http.GetStringAsync("http://" + host + ":443/") == "ok",
+            "A subsequent explicit manual choice still overrides automatic optimization");
+        await manualServing;
+        router.Nodes.Automatic(host);
+        DateTime routeNow = DateTime.UtcNow;
+        router.Nodes.Now = () => routeNow;
+        router.Nodes.Lookup = (_, _) => Task.FromResult(new[] { new NodeAddress(chosen, routeNow.AddSeconds(30), "fixture") });
+        await router.Nodes.Optimize(host, new Uri("https://" + host + "/fixture"), new Dictionary<string, string>(), null, ct);
+        routeNow = routeNow.AddSeconds(31);
+        router.Resolve = _ => { dnsQueries++; return Task.FromResult(new[] { chosen }); };
+        router.AutomaticConnector = (_, _, _) => throw new IOException("Native destination must not outrank a revalidated measured choice");
+        var revalidatedServing = Serve(origin, false);
+        using (var native = new TcpClient())
+        {
+            await native.ConnectAsync(IPAddress.Loopback, router.ServicePort("quark"), ct);
+            var stream = native.GetStream();
+            await stream.WriteAsync("CONNECT [2001:db8::99]:443 HTTP/1.1\r\nHost: [2001:db8::99]:443\r\n\r\n"u8.ToArray(), ct);
+            await ReadHeader(stream);
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("GET /fixture HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"), ct);
+            using var reader = new StreamReader(stream);
+            check((await reader.ReadToEndAsync(ct)).EndsWith("ok"),
+                "Expired-DNS preference is revalidated before a native IPv6 target can bypass it");
+        }
+        await revalidatedServing;
+        check(dnsQueries == 1 && router.Nodes.Preferred(host)!.Equals(chosen),
+            "One bounded DNS lookup renews the preference without a background download or IPv4");
+        router.AutomaticConnector = null;
         using var retryOrigin = new TcpListener(IPAddress.IPv6Loopback, 0);
         retryOrigin.Start();
         var retryServing = Serve(retryOrigin, false);
@@ -165,10 +221,25 @@ internal static class NodeTests
             Interlocked.Increment(ref retryQueries);
             return Task.FromResult(retryQueries == 1 ? Array.Empty<IPAddress>() : new[] { IPAddress.IPv6Loopback });
         };
-        check(await http.GetStringAsync("http://" + host + ":" + retryPort + "/") == "ok",
+        check(await http.GetStringAsync("http://dl-retry.quark.cn:" + retryPort + "/") == "ok",
             "Automatic strict IPv6 route refreshes AAAA after an empty result");
         await retryServing;
         check(retryQueries == 2, "Automatic retry performs one fresh AAAA lookup without IPv4 fallback");
+        await router.Nodes.Optimize(host, new Uri("https://" + host + "/fixture"), new Dictionary<string, string>(), null, ct);
+        router.NodeConnector = (_, _, _) => throw new IOException("Preferred node temporarily unavailable");
+        var fallbackServing = Serve(retryOrigin, false);
+        router.Resolve = _ => Task.FromResult(new[] { IPAddress.IPv6Loopback });
+        router.AutomaticConnector = async (_, _, token) =>
+        {
+            var client = new TcpClient(AddressFamily.InterNetworkV6);
+            await client.ConnectAsync(IPAddress.IPv6Loopback, retryPort, token);
+            return client;
+        };
+        check(await http.GetStringAsync("http://" + host + ":443/") == "ok",
+            "A failed automatic preference recovers through other IPv6 candidates");
+        await fallbackServing;
+        check(router.Nodes.Preferred(host) == null && router.Counters["quark"].V4 == 0 && originalRequests == 0,
+            "Failed automatic memory is discarded without permitting content IPv4");
         router.Nodes.Select(host, chosen);
         var originalServing = Serve(proxy, true);
         router.Enable("quark", false);

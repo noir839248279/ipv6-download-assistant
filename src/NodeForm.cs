@@ -62,7 +62,7 @@ internal sealed class NodeForm : Form
         url.AccessibleName = "有效HTTPS测速链接";
         headers.AccessibleName = "测速请求头JSON";
         tips.SetToolTip(host, "可选择已经观察到的服务器，也可以切到“自定义域名”后直接输入。");
-        tips.SetToolTip(url, "只有“测下载速度”需要这里：粘贴当前域名实际文件的 HTTPS 下载地址，不是网页地址。");
+        tips.SetToolTip(url, "夸克 / AList 可直接点“AList 文件择优”，不用填链接；其他来源可在这里填真实文件 HTTPS 地址。");
         tips.SetToolTip(headers, "例如 {\"User-Agent\":\"...\"}；可含 Cookie、Referer、Origin、Authorization，仅本次内存使用。");
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true };
         Button Add(FlowLayoutPanel parent, string text, Func<Task> action, int width = 116)
@@ -82,15 +82,19 @@ internal sealed class NodeForm : Form
         refresh.AccessibleName = "刷新节点"; tips.SetToolTip(refresh, "刷新 IPv6 节点");
         Add(toolbar, "测延迟", () => Measure(NodeOrder.Latency));
         Add(toolbar, "测下载速度", () => Measure(NodeOrder.Speed), 112);
-        var guide = new DashboardButton("怎么测速", "说明如何获取真实下载链接", (_, _) => ShowSpeedGuide())
+        var guide = new DashboardButton("怎么测速", "AList 文件择优或手动测速说明", (_, _) => ShowSpeedGuide())
         { Width = 92, Height = 34 };
         toolbar.Controls.Add(guide); workButtons.Add(guide);
         order.Items.AddRange(new object[] { "延迟最低优先", "速度最快优先" });
         order.SelectedIndex = 0; toolbar.Controls.Add(order);
+        Add(toolbar, "AList 文件择优", FromAlist, 132);
+        Add(toolbar, "一键择优", OptimizeCurrent, 96);
         cancel = new DashboardButton("取消", "取消节点测试", (_, _) => pending?.Cancel()) { Width = 74, Enabled = false };
         toolbar.Controls.Add(cancel);
         tips.SetToolTip(workButtons[1], "不需要下载链接；测量TCP连接和TLS握手总时延。");
         tips.SetToolTip(workButtons[2], "需要把当前域名实际文件的HTTPS下载链接粘贴到上方；不是网页地址。");
+        tips.SetToolTip(workButtons[4], "登录本机 AList 管理员账号后选择夸克文件，自动取原始链接；最多读取6MiB正文，不改画质或AList设置。");
+        tips.SetToolTip(workButtons[5], "用上方链接比较最多3个IPv6地址，短期记忆最快样本；只影响新连接，失败不回退IPv4。");
         foreach (var column in new[] { ("ip", "IPv6 地址", 35f, 260), ("latency", "TLS 延迟", 13f, 90),
             ("speed", "下载 MB/s", 14f, 95), ("ttl", "DNS有效期", 10f, 75), ("state", "状态 / 来源", 28f, 150) })
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = column.Item1, HeaderText = column.Item2,
@@ -140,7 +144,7 @@ internal sealed class NodeForm : Form
         service.SelectedIndexChanged += (_, _) => ApplyPreset(observedHosts);
         service.SelectedIndex = 0;
         status.Text = nodes.InterfaceIndex > 0
-            ? "先点刷新；测延迟不需要链接，测下载速度才需要真实文件链接，也可以直接选地址试用"
+            ? "夸克 / AList：点“AList 文件择优”后选视频；其他来源可刷新后直接选地址试用"
             : "未找到可用的物理 IPv6 出口，请关闭接管后重新开启";
         host.TextChanged += (_, _) =>
         {
@@ -162,6 +166,40 @@ internal sealed class NodeForm : Form
             if (pending != null) { e.Cancel = true; closing = true; pending.Cancel(); }
             else { clock.Stop(); url.Clear(); headers.Clear(); }
         };
+    }
+    async Task FromAlist()
+    {
+        if (pending != null) return;
+        if (nodes.InterfaceIndex <= 0) { status.Text = "没有可用的物理 IPv6 出口"; return; }
+        using var picker = new AlistResourceForm();
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.Resource is not AlistResource resource) return;
+        url.Clear(); headers.Clear();
+        host.Text = resource.Url.IdnHost;
+        displayedHost = ContentNodes.Host(host.Text);
+        try { await Optimize(resource.Url, resource.Headers); }
+        finally { resource.Headers.Clear(); }
+    }
+    Task OptimizeCurrent() => Work(async ct =>
+    {
+        displayedHost = ContentNodes.Host(host.Text);
+        var resource = ContentNodes.SpeedUrl(displayedHost, url.Text);
+        await OptimizeCore(resource, ContentNodes.Headers(headers.Text), ct);
+    }, requireRows: false);
+    Task Optimize(Uri resource, IReadOnlyDictionary<string, string> requestHeaders) =>
+        Work(ct => OptimizeCore(resource, requestHeaders, ct), requireRows: false);
+    async Task OptimizeCore(Uri resource, IReadOnlyDictionary<string, string> requestHeaders, CancellationToken ct)
+    {
+        if (nodes.InterfaceIndex <= 0) throw new InvalidOperationException("没有可用的物理 IPv6 出口");
+        status.Text = "正在比较下载速度（最多读取 6 MiB 正文，仅 IPv6）";
+        var progress = new Progress<int>(count =>
+        {
+            if (IsDisposed || closing || pending == null) return;
+            status.Text = $"已比较 {count} 个节点（最多 3 个）"; PaintRows();
+        });
+        var result = await nodes.Optimize(displayedHost, resource, requestHeaders, progress, ct);
+        order.SelectedIndex = 1;
+        focusedNode = result.Address.ToString();
+        status.Text = $"已择优：{result.BytesPerSecond / 1e6:F2} MB/s 短样本；新连接生效，已有连接不打断";
     }
     void ApplyPreset(string[] observedHosts)
     {
@@ -189,15 +227,17 @@ internal sealed class NodeForm : Form
     void ShowSpeedGuide()
     {
         MessageBox.Show(this,
-            "最简单的用法：\r\n" +
-            "1. 点“刷新”。\r\n" +
-            "2. 只想试节点：直接选中一行，点“使用所选节点”，不需要测速链接。\r\n" +
-            "3. 想比较真实下载速度：先让对应服务开始播放或下载，在浏览器开发者工具/下载工具的网络详情中复制“实际文件请求”的完整 HTTPS 地址，粘贴到“测速链接”。网页首页、分享页、Steam商店页都不能测速。\r\n\r\n" +
+            "夸克 / 爆米花通过本机 AList：\r\n" +
+            "1. 开启夸克接管，点“AList 文件择优”。\r\n" +
+            "2. 用本机 AList 管理员账号登录（仅连接 127.0.0.1:5244），打开文件夹并选择要看的原视频。不需要自己找链接。\r\n" +
+            "3. 自动比较最多3个IPv6地址，每个最多读取2MiB正文。账号、密码、链接和请求头不保存；请求及TLS开销另计。\r\n" +
+            "4. 显示“已择优”后，重新发起播放或下载，新连接才会用择优地址；不主动打断已有播放。按域名和当前网络最多记忆5分钟，到期恢复自动，不后台重复测速。\r\n\r\n" +
+            "不想测速：点“刷新”，选中地址后点“使用所选节点”即可试用。\r\n" +
+            "其他来源手动测速：填写与上方内容域名一致的真实文件 HTTPS/443 链接，再点“一键择优”或“测下载速度”。网页首页、分享页不能测速。\r\n\r\n" +
             "Bilibili：播放视频后，在网络请求中找视频文件请求（通常是 .m4s 或 .mp4），复制 URL。\r\n" +
-            "夸克：开始文件下载后，从下载工具的任务详情复制实际文件 URL；签名链接过期很快，过期就重新复制。\r\n" +
             "Steam：Steam客户端不直接显示文件 URL，需要使用能显示实际网络请求的下载工具；只测延迟即可直接选节点。\r\n" +
-            "自定义：粘贴该域名实际文件的 HTTPS/443 URL，并保证链接域名和上方内容域名完全一致。\r\n\r\n" +
-            "链接和请求头只在本窗口内存中使用，不保存到报告。没有链接时请用“测延迟”，或者直接试用节点。",
+            "签名链接是文件的临时通行证，过期后重新选文件即可；不是IPv6节点只能用这么久。测速失败不会放开内容IPv4，也不降低画质。\r\n\r\n" +
+            "短样本用于比较当前候选，不能保证其他文件或持续播放同样快。没有链接也可以测延迟或直接试用节点。",
             "怎么测速", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
     void UpdateTtl()
@@ -210,9 +250,7 @@ internal sealed class NodeForm : Form
         if (!same) { PaintRows(); return; }
         for (int i = 0; i < rows.Length; i++)
             grid.Rows[i].Cells["ttl"].Value = $"{Math.Max(0, (int)(rows[i].Dns.ExpiresUtc - nodes.Now()).TotalSeconds)} 秒";
-        current.Text = nodes.Selected(displayedHost) is IPAddress chosen
-            ? "当前已选择：" + chosen + "（新建HTTPS/443连接生效）"
-            : "当前：自动（可直接选中地址试用）";
+        current.Text = SelectionText();
     }
     NodeOrder SortOrder => order.SelectedIndex == 1 ? NodeOrder.Speed : NodeOrder.Latency;
     async Task Measure(NodeOrder mode)
@@ -222,13 +260,14 @@ internal sealed class NodeForm : Form
             if (nodes.InterfaceIndex <= 0) throw new InvalidOperationException("没有物理 IPv6 出口，请全部关闭后重新开启接管");
             Uri? resource = mode == NodeOrder.Speed ? ContentNodes.SpeedUrl(displayedHost, url.Text) : null;
             var requestHeaders = mode == NodeOrder.Speed ? ContentNodes.Headers(headers.Text) : new Dictionary<string, string>();
-            int total = nodes.Snapshot(displayedHost).Length;
+            int total = mode == NodeOrder.Speed ? Math.Min(ContentNodes.SampleCount, nodes.Snapshot(displayedHost).Length) :
+                nodes.Snapshot(displayedHost).Length;
             var progress = new Progress<int>(count =>
             {
                 if (IsDisposed || closing || pending == null) return;
                 status.Text = $"已测试 {count} / {total}"; PaintRows();
             });
-            status.Text = mode == NodeOrder.Speed ? "正在测试下载速度（最多32MiB，可取消）" : "正在测试 TLS 延迟";
+            status.Text = mode == NodeOrder.Speed ? "正在测试下载速度（最多读取6MiB正文，仅IPv6，可取消）" : "正在测试 TLS 延迟";
             await nodes.Measure(displayedHost, mode, resource, requestHeaders, progress, ct);
             order.SelectedIndex = mode == NodeOrder.Speed ? 1 : 0;
             status.Text = "测试结束；仅有效且未过期的结果参与排序";
@@ -284,10 +323,13 @@ internal sealed class NodeForm : Form
             grid.CurrentCell = grid.Rows[selectedIndex].Cells[0];
         }
         if (scrollRow >= 0 && scrollRow < grid.Rows.Count) grid.FirstDisplayedScrollingRowIndex = scrollRow;
-        current.Text = nodes.Selected(displayedHost) is IPAddress chosen
-            ? "当前已选择：" + chosen + "（新建HTTPS/443连接生效）"
-            : "当前：自动（可直接选中地址试用）";
+        current.Text = SelectionText();
     }
+    string SelectionText() => nodes.Selected(displayedHost) is IPAddress chosen
+            ? "当前已选择：" + chosen + "（新建HTTPS/443连接生效）"
+            : nodes.Preferred(displayedHost) is IPAddress preferred
+            ? "自动择优：" + preferred + "（仅新连接，最多记忆5分钟并复核DNS）"
+            : "当前：自动（可直接选中地址试用）";
     protected override void Dispose(bool disposing)
     {
         if (disposing) { clock.Dispose(); tips.Dispose(); pending?.Cancel(); }
@@ -295,10 +337,11 @@ internal sealed class NodeForm : Form
     }
     internal static void UiTest(string prefix)
     {
-        var nodes = new ContentNodes { InterfaceIndex = 17 };
+        var nodes = new ContentNodes { InterfaceIndex = 17, NetworkIdentity = () => "fixture-network" };
         const string domain = "dl-test.quark.cn";
+        var expiry = DateTime.UtcNow.AddMinutes(3);
         nodes.Lookup = (_, _) => Task.FromResult(Enumerable.Range(1, 6).Select(i =>
-            new NodeAddress(IPAddress.Parse("2001:db8:abcd:1005:3::" + i), DateTime.UtcNow.AddMinutes(3), "测试 DNS")).ToArray());
+            new NodeAddress(IPAddress.Parse("2001:db8:abcd:1005:3::" + i), expiry, "测试 DNS")).ToArray());
         nodes.LatencyProbe = (_, ip, _) => Task.FromResult((double)ip.GetAddressBytes()[15] * 12);
         nodes.SpeedProbe = (_, ip, _, _) => Task.FromResult(new NodeSpeed(10_000_000d / ip.GetAddressBytes()[15], "Range 完整"));
         using var form = new NodeForm(nodes, new[] { domain }) { ShowInTaskbar = false, Opacity = 0 };
@@ -334,6 +377,12 @@ internal sealed class NodeForm : Form
                 Check(form.url.UseSystemPasswordChar && form.headers.UseSystemPasswordChar, "Resource URLs and headers are masked");
                 nodes.Best(domain, NodeOrder.Speed); form.PaintRows();
                 Check(form.current.Text.Contains("::1"), "Chosen node is visible in the current selection status");
+                await form.OptimizeCurrent();
+                Check(form.current.Text.StartsWith("自动择优：") && form.status.Text.StartsWith("已择优：") &&
+                    nodes.Selected(domain) == null && nodes.Preferred(domain) != null,
+                    "One-click optimization reports the applied choice distinctly from manual selection");
+                Check(form.workButtons.Any(b => b.Text == "AList 文件择优"),
+                    "The local AList file picker is available without a copied signed URL");
                 foreach (int width in new[] { 940, 760 })
                 {
                     form.ClientSize = new(width * form.DeviceDpi / 96, 640 * form.DeviceDpi / 96);
