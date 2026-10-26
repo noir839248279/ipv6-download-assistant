@@ -6,10 +6,12 @@ internal sealed class ContentDns : IDisposable
 {
     readonly HttpClient http;
     internal Func<string,CancellationToken,Task<NodeAddress[]>>[] Sources;
-    public ContentDns(string proxy){
+    internal Func<string?> ClientSubnet = () => null;
+    public ContentDns(string proxy,HttpMessageHandler? transport=null){
         var handler=new HttpClientHandler{AllowAutoRedirect=false,UseProxy=!string.IsNullOrWhiteSpace(proxy)};
         if(handler.UseProxy){if(proxy.Contains('='))proxy=proxy.Split(';').FirstOrDefault(p=>p.StartsWith("https=",StringComparison.OrdinalIgnoreCase))?[6..]??throw new IOException("不支持的 DNS 代理配置");handler.Proxy=new WebProxy("http://"+proxy);}
-        http=new(handler){Timeout=TimeSpan.FromSeconds(5)};
+        http=new(transport??handler){Timeout=TimeSpan.FromSeconds(5)};
+        if(transport!=null)handler.Dispose();
         Sources=new Func<string,CancellationToken,Task<NodeAddress[]>>[]{SystemLookup,DohLookup};
     }
     public Task<IPAddress[]> Resolve(string host)=>Lookup(host,false);
@@ -20,11 +22,22 @@ internal sealed class ContentDns : IDisposable
         var pending=Sources.Select(source=>Query(source,host,deadline.Token)).ToList();
         bool answered=false;
         var addresses=new List<IPAddress>();
+        var scoped=ScopedQuery(host,deadline.Token);
+        if(scoped!=null)pending.Insert(0,scoped);
         try{
+            // A proxy or resolver in another network can steer this CDN away
+            // from the physical IPv6 exit. Never race those answers together.
+            if(!allSources&&scoped!=null){
+                await Task.WhenAny(scoped,Task.Delay(800,deadline.Token));
+                if(scoped.IsCompletedSuccessfully){
+                    var result=await scoped;
+                    if(result.Rows.Length>0)return result.Rows.Select(n=>n.Address).Distinct().ToArray();
+                }
+            }
             // Give the network's own resolver a short head start for CDN locality.
             // Public DNS still supplies answers if local resolution is empty or slow.
             if(!allSources&&pending.Count>0){
-                var preferred=pending[0];
+                var preferred=pending.First(p=>p!=scoped);
                 await Task.WhenAny(preferred,Task.Delay(350,deadline.Token));
                 if(preferred.IsCompletedSuccessfully){
                     var result=await preferred;
@@ -34,7 +47,8 @@ internal sealed class ContentDns : IDisposable
             while(pending.Count>0){
                 var task=await Task.WhenAny(pending);pending.Remove(task);
                 var result=await task;answered|=result.Answered;
-                addresses.AddRange(result.Rows.Select(n=>n.Address));
+                if(task==scoped)addresses.InsertRange(0,result.Rows.Select(n=>n.Address));
+                else addresses.AddRange(result.Rows.Select(n=>n.Address));
                 if(!allSources&&addresses.Count>0)return addresses.Distinct().ToArray();
             }
             if(!answered)throw new HttpRequestException("IPv6 DNS sources unavailable");
@@ -54,8 +68,15 @@ internal sealed class ContentDns : IDisposable
     static async Task<NodeAddress[]> SystemLookup(string host,CancellationToken ct)=>
         (await Dns.GetHostAddressesAsync(host,ct))
             .Where(ContentNodes.PublicV6).Select(ip=>new NodeAddress(ip,DateTime.UtcNow.AddSeconds(30),"系统 DNS")).ToArray();
-    async Task<NodeAddress[]> DohLookup(string host,CancellationToken ct){
-                using var response=await http.GetAsync("https://dns.alidns.com/resolve?name="+Uri.EscapeDataString(host)+"&type=AAAA",ct);
+    Task<(NodeAddress[] Rows,bool Answered)>? ScopedQuery(string host,CancellationToken ct){
+        if(!DownloadRouter.QuarkDownloadHost(host)||ClientSubnet() is not string prefix)return null;
+        return Query((h,token)=>DohLookup(h,token,prefix),host,ct);
+    }
+    Task<NodeAddress[]> DohLookup(string host,CancellationToken ct)=>DohLookup(host,ct,null);
+    async Task<NodeAddress[]> DohLookup(string host,CancellationToken ct,string? prefix){
+                string url="https://dns.alidns.com/resolve?name="+Uri.EscapeDataString(host)+"&type=AAAA";
+                if(prefix!=null)url+="&edns_client_subnet="+Uri.EscapeDataString(prefix);
+                using var response=await http.GetAsync(url,ct);
                 response.EnsureSuccessStatusCode();
                 using var doc=JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                 if(doc.RootElement.TryGetProperty("Status",out var status)&&status.GetInt32() is not (0 or 3))
@@ -65,12 +86,16 @@ internal sealed class ContentDns : IDisposable
                 return answers.EnumerateArray().Where(a=>a.GetProperty("type").GetInt32()==28)
                     .Select(a=>IPAddress.TryParse(a.GetProperty("data").GetString(),out var ip)?ip:null)
                     .Where(ip=>ip!=null&&ContentNodes.PublicV6(ip))
-                    .Select(ip=>new NodeAddress(ip!,DateTime.UtcNow.AddSeconds(Math.Clamp(ttl,0,300)),"AliDNS")).ToArray();
+                    .Select(ip=>new NodeAddress(ip!,DateTime.UtcNow.AddSeconds(Math.Clamp(ttl,0,300)),
+                        prefix==null?"AliDNS":"AliDNS / 当前 IPv6 网段")).ToArray();
     }
     internal async Task<NodeAddress[]> Discover(string host,CancellationToken ct){
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(4));
-        var responses=await Task.WhenAll(Sources.Select(source=>Query(source,host,deadline.Token)));
+        var pending=Sources.Select(source=>Query(source,host,deadline.Token)).ToList();
+        var scoped=ScopedQuery(host,deadline.Token);
+        if(scoped!=null)pending.Insert(0,scoped);
+        var responses=await Task.WhenAll(pending);
         ct.ThrowIfCancellationRequested();
         if(responses.All(x=>!x.Answered))throw new HttpRequestException("IPv6 DNS sources unavailable");
         return responses.SelectMany(x=>x.Rows).GroupBy(x=>x.Address)

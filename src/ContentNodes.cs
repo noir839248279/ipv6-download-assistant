@@ -243,6 +243,24 @@ internal static class NodeNetwork
         }
         catch (NetworkInformationException) { return false; }
     });
+    internal static string? ClientSubnetAddress(IPAddress address)
+    {
+        if (!ContentNodes.PublicV6(address)) return null;
+        var bytes = address.GetAddressBytes();
+        Array.Clear(bytes, 6, bytes.Length - 6);
+        return new IPAddress(bytes) + "/48";
+    }
+    internal static string? ClientSubnet(int interfaceIndex)
+    {
+        try
+        {
+            var nic = PhysicalInterface(interfaceIndex);
+            var address = nic?.GetIPProperties().UnicastAddresses
+                .Select(a => a.Address).FirstOrDefault(ContentNodes.PublicV6);
+            return address == null ? null : ClientSubnetAddress(address);
+        }
+        catch (NetworkInformationException) { return null; }
+    }
     internal static async Task<TcpClient> Connect(IPAddress ip, int port, int interfaceIndex, CancellationToken ct)
     {
         if (!ContentNodes.PublicV6(ip)) throw new IOException("节点不是公网 IPv6");

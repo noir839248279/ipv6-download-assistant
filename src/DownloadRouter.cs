@@ -185,7 +185,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     public async Task Start(bool system=true){
         TestMode=!system;
         if(system){settings.Prepare();FallbackProxy=settings.Proxy;Bypass=settings.Bypass;}
-        if(ProductionPolicies){contentDns=new(FallbackProxy);Resolve=contentDns.Resolve;Nodes.Lookup=contentDns.Discover;}
+        if(ProductionPolicies){contentDns=new(FallbackProxy){ClientSubnet=()=>NodeNetwork.ClientSubnet(Nodes.InterfaceIndex)};Resolve=contentDns.Resolve;Nodes.Lookup=contentDns.Discover;}
         listener=new TcpListener(IPAddress.Loopback,0);listener.Start();Port=((IPEndPoint)listener.LocalEndpoint).Port;StartAccept(listener,"browser");
         if(ProductionPolicies){
             foreach(var site in Sites.Where(s=>s.Id!="global"))servicePorts[site.Id]=StartNative(site.Id);
