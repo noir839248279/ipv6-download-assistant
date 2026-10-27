@@ -95,6 +95,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
     readonly ConcurrentDictionary<string,DownloadCounter> servers=new();
     readonly ConcurrentDictionary<string,string> serverSites=new();
     ContentDns? contentDns;
+    internal DnsScheduleDiagnostics? DnsScheduling=>contentDns?.Scheduling;
     internal bool ProductionPolicies;
     internal int SteamPort {get;private set;}
     internal int EpicPort {get;private set;}
@@ -143,7 +144,8 @@ internal sealed class DownloadRouter : IAsyncDisposable
         work=pendingWork.Values.Select(p=>new{p.Listener,p.Site,p.Host,Step=p.Current}).GroupBy(p=>new{p.Listener,p.Site,p.Host,p.Step.Stage})
             .Select(g=>new{listener=g.Key.Listener,site=g.Key.Site,host=g.Key.Host,stage=g.Key.Stage,count=g.Count(),oldestSeconds=Math.Max(0,(DateTime.UtcNow-g.Min(p=>p.Step.SinceUtc)).TotalSeconds)}).ToArray(),
         auxiliaryAdmission=auxiliaryAdmission.Snapshot(),
-        ingress=ingressDiagnostics?.Status(),runtimeDiagnostics=RuntimeReportStatus};
+        ingress=ingressDiagnostics?.Status(),runtimeDiagnostics=RuntimeReportStatus,
+        dnsScheduling=DnsScheduling?.Snapshot()};
     internal object IngressSnapshot()=>new{health=Health(),recentRoutes=RecentRoutes(),
         services=Counters.Select(p=>new{id=p.Key,enabled=p.Value.Enabled,mode=p.Value.Mode.ToString(),
             ipv4=Interlocked.Read(ref p.Value.V4),ipv6=Interlocked.Read(ref p.Value.V6),proxyUnknown=Interlocked.Read(ref p.Value.Proxy),
@@ -209,6 +211,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
         await web.StartAsync();pacBaseUrl=web.Urls.Single()+path;
         if(system){
             string reports=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"IPv6Lens","reports");
+            if(contentDns!=null)contentDns.Scheduling.Directory=reports;
             runtimeDiagnostics=new(reports,IngressSnapshot);
             ingressDiagnostics=new(Port,DiagnosticPath,IngressSnapshot,reports,sampleRuntime:()=>runtimeDiagnostics.Observe(RuntimeSample()));
             ingressDiagnostics.Start();
@@ -400,7 +403,8 @@ internal sealed class DownloadRouter : IAsyncDisposable
                 if(!dns.TryGetValue(host,out var cache)||DateTime.UtcNow-cache.Time>TimeSpan.FromSeconds(ProductionPolicies?30:120)){
                     try{
                         addresses=await (resolveAttempt>0&&ProductionPolicies&&!TestMode&&contentDns!=null
-                            ?contentDns.ResolveAll(host):Resolve(host)).WaitAsync(TimeSpan.FromSeconds(5),ct);
+                            ?(contentDns.Scheduling.NeedsOriginalFallback(host)?contentDns.ResolveFallback(host):contentDns.ResolveAll(host))
+                            :Resolve(host)).WaitAsync(TimeSpan.FromSeconds(5),ct);
                         if(dns.Count<2000)dns[host]=(DateTime.UtcNow,addresses);
                     }
                     catch(Exception ex)when(ex is SocketException or TimeoutException or HttpRequestException or TaskCanceledException){ct.ThrowIfCancellationRequested();dnsFailed=true;}
@@ -414,9 +418,11 @@ internal sealed class DownloadRouter : IAsyncDisposable
                     if(candidates.Length>0){
                         try{
                             var client=await RaceIPv6(host,port,scheme,candidates,allowFallback,ct);
+                            if(client.Client.RemoteEndPoint is IPEndPoint peer)DnsScheduling?.Connected(host,peer.Address);
                             row.State="正在使用 IPv6";row.Server=host;return(client,false);
                         }catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException or System.Security.Authentication.AuthenticationException){
                             ct.ThrowIfCancellationRequested();lastError=ex;
+                            DnsScheduling?.ConnectionFailed(host,candidates);
                         }
                     }
                     if(allowFallback||resolveAttempt==resolveAttempts-1)break;
@@ -425,6 +431,7 @@ internal sealed class DownloadRouter : IAsyncDisposable
             if(preferV6&&!allowFallback){
                 if(addresses.Length>0)dns.TryRemove(host,out _);
                 string reason=dnsFailed?"dns_failed":lastError!=null?"ipv6_connect_failed":"no_aaaa";
+                DnsScheduling?.Record(host,"ipv6_route_failed",reason);
                 throw new IPv6RouteException(reason,lastError);
             }
         }

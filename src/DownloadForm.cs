@@ -26,7 +26,7 @@ internal sealed partial class DownloadForm : Form
     readonly LinkLabel diagnosticStatus = new() { Text = "诊断：点击打开报告目录",
         AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, LinkBehavior = LinkBehavior.HoverUnderline };
     static string ReportsDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IPv6Lens", "reports");
-    string? lastSavedReport, reportWriteError, seenRuntimeReport, seenIngressReport;
+    string? lastSavedReport, reportWriteError, seenRuntimeReport, seenIngressReport, seenDnsReport;
     readonly Label sectionTitle = MakeLabel("服务监控", 12, true);
     readonly Label serviceCount = MakeLabel("0 / 6 已开启", 9);
     readonly Label masterText = MakeLabel("全部关闭", 9, true);
@@ -319,6 +319,9 @@ internal sealed partial class DownloadForm : Form
             if (!r.Enabled && passive != null) tile.State = passive.ServiceStatus(id);
             if (r.Enabled && ipv6Available == false)
                 tile.State = "无本机 IPv6 出口 · 内容未回退";
+            else if(r.Enabled&&router?.ProtectionLost!=true&&router?.DnsScheduling?.Warning(id) is string dnsWarning)
+                tile.State=dnsWarning;
+            tooltips.SetToolTip(tile,router?.DnsScheduling?.Describe(id));
             totals[0] += Interlocked.Read(ref r.V6); totals[1] += Interlocked.Read(ref r.V4); totals[2] += Interlocked.Read(ref r.Proxy);
             uploaded[0] += Interlocked.Read(ref r.Upload6); uploaded[1] += Interlocked.Read(ref r.Upload4); uploaded[2] += Interlocked.Read(ref r.UploadProxy);
             rates[0] += r.Rate6; rates[1] += r.Rate4; rates[2] += r.RateProxy;
@@ -331,7 +334,9 @@ internal sealed partial class DownloadForm : Form
             lastSavedReport = seenRuntimeReport = runtimeFile;
         if (router?.IngressReportFile is string ingressFile && ingressFile != seenIngressReport)
             lastSavedReport = seenIngressReport = ingressFile;
-        string? diagnosticError = reportStatus?.Error ?? router?.IngressReportError ?? reportWriteError;
+        if(router?.DnsScheduling?.LastReport is string dnsFile&&dnsFile!=seenDnsReport)
+            lastSavedReport=seenDnsReport=dnsFile;
+        string? diagnosticError = reportStatus?.Error ?? router?.IngressReportError ?? router?.DnsScheduling?.ReportError ?? reportWriteError;
         diagnosticStatus.Text = diagnosticError != null ? "诊断保存失败：" + diagnosticError + " · 点击打开目录" :
             reportStatus?.ManualPending == true ? "正在记录卡顿现场（下一次后台采样，约 10 秒内）…" :
             lastSavedReport != null ? "诊断已保存：" + lastSavedReport + " · 点击打开目录" :
@@ -636,6 +641,7 @@ internal sealed partial class DownloadForm : Form
         runtimeHistory = router?.RuntimeHistory(),
         scope = "Enabled: relay stream bytes. Mixed permits only exact auxiliary hosts with a shared per-service 2 MiB allowance; grants require confirmation. All content/unknown hosts remain IPv6-only, including when local IPv6 is unavailable. Disabling restores the possibly paid original path. Disabled: passive native process public bytes or same-process recent DNS correlation for browser/AList; incomplete under encrypted DNS, shared IPs and local proxies. Loopback AList is excluded. TUN/proxy exit is unknown. Not campus billing.",
         recentRoutes=router?.RecentRoutes(),
+        dnsScheduling=router?.DnsScheduling?.Snapshot(),
         passiveStatus=passive?.Status,passiveLostEvents=passive?.Lost,
         services = counters.Select(p => new
         {

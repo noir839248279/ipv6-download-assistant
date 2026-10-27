@@ -7,6 +7,14 @@ internal sealed class ContentDns : IDisposable
     readonly HttpClient http;
     internal Func<string,CancellationToken,Task<NodeAddress[]>>[] Sources;
     internal Func<string?> ClientSubnet = () => null;
+    internal readonly DnsScheduleDiagnostics Scheduling = new();
+    internal static string? ScopedSite(string host)
+    {
+        if (IPAddress.TryParse(host, out _) || Uri.CheckHostName(host) != UriHostNameType.Dns) return null;
+        if (DownloadRouter.QuarkDownloadHost(host)) return "quark";
+        return DownloadRouter.ContentSite(host) is string site &&
+            site is "bilibili" or "steam" or "epic" ? site : null;
+    }
     public ContentDns(string proxy,HttpMessageHandler? transport=null){
         var handler=new HttpClientHandler{AllowAutoRedirect=false,UseProxy=!string.IsNullOrWhiteSpace(proxy)};
         if(handler.UseProxy){if(proxy.Contains('='))proxy=proxy.Split(';').FirstOrDefault(p=>p.StartsWith("https=",StringComparison.OrdinalIgnoreCase))?[6..]??throw new IOException("不支持的 DNS 代理配置");handler.Proxy=new WebProxy("http://"+proxy);}
@@ -16,13 +24,14 @@ internal sealed class ContentDns : IDisposable
     }
     public Task<IPAddress[]> Resolve(string host)=>Lookup(host,false);
     internal Task<IPAddress[]> ResolveAll(string host)=>Lookup(host,true);
-    async Task<IPAddress[]> Lookup(string host,bool allSources){
+    internal Task<IPAddress[]> ResolveFallback(string host)=>Lookup(host,true,true);
+    async Task<IPAddress[]> Lookup(string host,bool allSources,bool originalOnly=false){
         if(IPAddress.TryParse(host,out var literal))return new[]{literal};
         using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(4));
         var pending=Sources.Select(source=>Query(source,host,deadline.Token)).ToList();
         bool answered=false;
         var addresses=new List<IPAddress>();
-        var scoped=ScopedQuery(host,deadline.Token);
+        var scoped=originalOnly?null:ScopedQuery(host,deadline.Token);
         if(scoped!=null)pending.Insert(0,scoped);
         try{
             // A proxy or resolver in another network can steer this CDN away
@@ -31,8 +40,16 @@ internal sealed class ContentDns : IDisposable
                 await Task.WhenAny(scoped,Task.Delay(800,deadline.Token));
                 if(scoped.IsCompletedSuccessfully){
                     var result=await scoped;
-                    if(result.Rows.Length>0)return result.Rows.Select(n=>n.Address).Distinct().ToArray();
+                    if(result.Rows.Length>0){
+                        RecordScoped(host,result);
+                        return result.Rows.Select(n=>n.Address).Distinct().ToArray();
+                    }
+                    Scheduling.Record(host,"dns_fallback",result.Answered?"no_aaaa":"query_failed");
+                }else{
+                    Scheduling.Record(host,"dns_fallback","timeout_800ms");
                 }
+                // A late scoped answer must not override this lookup's fallback.
+                pending.Remove(scoped);
             }
             // Give the network's own resolver a short head start for CDN locality.
             // Public DNS still supplies answers if local resolution is empty or slow.
@@ -47,6 +64,7 @@ internal sealed class ContentDns : IDisposable
             while(pending.Count>0){
                 var task=await Task.WhenAny(pending);pending.Remove(task);
                 var result=await task;answered|=result.Answered;
+                if(task==scoped)RecordScoped(host,result);
                 if(task==scoped)addresses.InsertRange(0,result.Rows.Select(n=>n.Address));
                 else addresses.AddRange(result.Rows.Select(n=>n.Address));
                 if(!allSources&&addresses.Count>0)return addresses.Distinct().ToArray();
@@ -69,8 +87,14 @@ internal sealed class ContentDns : IDisposable
         (await Dns.GetHostAddressesAsync(host,ct))
             .Where(ContentNodes.PublicV6).Select(ip=>new NodeAddress(ip,DateTime.UtcNow.AddSeconds(30),"系统 DNS")).ToArray();
     Task<(NodeAddress[] Rows,bool Answered)>? ScopedQuery(string host,CancellationToken ct){
-        if(!DownloadRouter.QuarkDownloadHost(host)||ClientSubnet() is not string prefix)return null;
+        if(ScopedSite(host)==null)return null;
+        if(ClientSubnet() is not string prefix){Scheduling.Record(host,"skipped","no_physical_ipv6_context");return null;}
+        Scheduling.Record(host,"query");
         return Query((h,token)=>DohLookup(h,token,prefix),host,ct);
+    }
+    void RecordScoped(string host,(NodeAddress[] Rows,bool Answered) result){
+        if(result.Rows.Length>0)Scheduling.Record(host,"scoped_answer",scoped:result.Rows.Select(n=>n.Address).ToArray());
+        else Scheduling.Record(host,"dns_fallback",result.Answered?"no_aaaa":"query_failed");
     }
     Task<NodeAddress[]> DohLookup(string host,CancellationToken ct)=>DohLookup(host,ct,null);
     async Task<NodeAddress[]> DohLookup(string host,CancellationToken ct,string? prefix){
@@ -97,6 +121,7 @@ internal sealed class ContentDns : IDisposable
         if(scoped!=null)pending.Insert(0,scoped);
         var responses=await Task.WhenAll(pending);
         ct.ThrowIfCancellationRequested();
+        if(scoped!=null)RecordScoped(host,await scoped);
         if(responses.All(x=>!x.Answered))throw new HttpRequestException("IPv6 DNS sources unavailable");
         return responses.SelectMany(x=>x.Rows).GroupBy(x=>x.Address)
             .Select(g=>g.OrderByDescending(x=>x.ExpiresUtc).First()).ToArray();
