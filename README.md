@@ -12,7 +12,13 @@
 
 普通用户请下载 `IPv6-Download-Assistant-3.0.11-win-x64-portable.zip`。GitHub 自动生成的 `Source code (zip)` 是源码，不是可直接运行的软件。
 
-当前源码为 **v3.3.11 多服务网段选址版**：将夸克的粗粒度 IPv6 网段 DNS 提示扩展到 Bilibili、Steam、Epic 已识别内容域名；失败沿用原 DNS 和 IPv6 候选，不回退内容 IPv4。新增服务卡失败提示、成败计数和有界诊断记录。保留 v3.3.10 的本机 AList 文件选择与显式吞吐择优、v3.3.8 的原目标地址修复和专属补丁内核 `v1.19.10-ipv6lens.1`，以及独立混合开关、被动计量和服务中继隔离。不在播放期间后台测速或强制换节点。IPv6 内容保护和辅助 IPv4 额度不变。构建、启动和打包拒绝未配套内核，不能借用其他代理的 core。没有本机 IPv6 时明确提示，不自动解除内容保护。本机夹具或短样本不等于已解决真实内核高 CPU、入口失联或所有 4K 播放问题。可按文末命令本地构建；公开发行包仍为 v3.0.11。
+当前源码为 **v3.3.12 连接表并发修复版**：专属补丁内核 `v1.19.10-ipv6lens.2` 将 Windows 进程归属连接表查询串行化，针对已采样到的系统枚举热点，避免大量线程同时进入该系统调用；每次仍读取最新连接表，不缓存端口归属、不关闭进程识别。辅助请求拒绝报告区分上游失败冷却、单域并发满及总并发满，不扩大额度或改变路由。保留 v3.3.11 的夸克、Bilibili、Steam、Epic 内容网段选址和失败记录，以及本机 AList 吞吐择优、DIRECT 原目标修复、独立混合开关、被动计量和服务中继隔离。不在播放期间后台测速或强制换节点，内容不自动回落 IPv4。构建、启动和打包拒绝未配套内核，不能借用其他代理的 core。本机回归不能替代部署后的 CPU、拒绝率或真实 4K 播放验收，不能声称所有旧故障已解决。可按文末命令本地构建；公开发行包仍为 v3.0.11。
+
+### CPU 与辅助请求诊断
+
+CPU 报告的 `CpuWholeMachinePercent` 是整机占比，不是单核占比。低吞吐时持续占用整机约一半不能当作正常下载成本。本次修复仅针对现场采样确认的 Windows 连接表枚举热点；效果仍需新内核部署后的同类使用场景确认。
+
+辅助拒绝数是累计尝试次数，不等于失败文件数，也不能单凭该数字认定发生递归或它导致高 CPU。运行报告的辅助准入快照保留 `rejected` 总数，增加 `cooldownRejected`（连续上游失败触发冷却）、`hostLimitRejected`（同域连接数满）、`totalLimitRejected`（总辅助连接数满）及 `lastReason`。一次拒绝只归入一个原因；仍保留单域 8、总计 32 和 15 秒冷却，内容 IPv6 保护及辅助 IPv4 额度不变。
 
 免安装包包含 .NET 10 运行时和独立 Mihomo 内核，无需安装 .NET 或 WSL。程序尚未签名，首次运行时 Windows 可能显示未知发布者提示。
 
@@ -151,7 +157,7 @@ v3.3.5 在同一独立后台线程增加运行采样，不依赖界面速度刷�
 
 程序输出到 `app/IPv6Lens.exe`。
 
-`build-core.ps1` 在独立解包目录应用 `third-party/mihomo-original-destination.patch`，加入同目录的 Go helper 与局部测试，测试通过后以 `with_gvisor` 构建 Windows amd64 内核。补丁只调整 DIRECT TCP 的目标地址使用，不改变 DNS 模式、混合额度或服务规则。运行时在开启接管前检查内核版本；不配套时明确失败，不退回旧内核。
+`build-core.ps1` 在独立解包目录应用 `third-party/mihomo-original-destination.patch`，加入同目录的原目标与 `mihomo-transport-table_windows*.go` helper 和局部测试，测试通过后以 `with_gvisor` 构建 Windows amd64 内核。补丁调整 DIRECT TCP 的目标地址使用和 Windows 连接表读取并发，不改变 DNS 模式、混合额度或服务规则。运行时在开启接管前检查内核版本；不配套时明确失败，不退回旧内核。
 
 原目标与服务开关回归会先将既有物理网卡的本机 IPv4 种入真实 redir-host DNS 映射，再令 DIRECT 解析器返回不同的回环地址，验证最终连接仍到客户端选定的本机服务器，并检查另一服务的 IPv6 流不中断。不启用 TUN、不访问公网、不修改地址或路由：
 
@@ -215,4 +221,4 @@ v3.3.5 在同一独立后台线程增加运行采样，不依赖界面速度刷�
 
 压缩包输出到 `releases/`。打包脚本只收集主程序、图标、内核、说明、许可证、对应版本的 Mihomo 原始源码归档及本软件的内核补丁、helper、测试与构建脚本，不收集本机配置或日志。
 
-第三方组件包括基于 Mihomo Meta v1.19.10 的补丁内核 v1.19.10-ipv6lens.1（Windows amd64，GPL-3.0）、YamlDotNet 16.3.0、Microsoft.Diagnostics.Tracing.TraceEvent 3.1.28 和 .NET 10。来源和许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+第三方组件包括基于 Mihomo Meta v1.19.10 的补丁内核 v1.19.10-ipv6lens.2（Windows amd64，GPL-3.0）、YamlDotNet 16.3.0、Microsoft.Diagnostics.Tracing.TraceEvent 3.1.28 和 .NET 10。来源和许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

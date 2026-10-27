@@ -17,7 +17,7 @@ internal sealed class NativeCapture : IAsyncDisposable
     [DllImport("kernel32.dll")]static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr value);
     internal static string CorePath=>Path.Combine(AppContext.BaseDirectory,"core","mihomo.exe");
-    internal const string RequiredCoreVersion="v1.19.10-ipv6lens.1";
+    internal const string RequiredCoreVersion="v1.19.10-ipv6lens.2";
     internal static bool SupportedCore(string text){
         string prefix="Mihomo Meta "+RequiredCoreVersion+" windows amd64";
         string line=text.Split('\n')[0].Trim();

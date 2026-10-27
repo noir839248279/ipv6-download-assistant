@@ -12,7 +12,8 @@ internal sealed class AuxiliaryAdmission(IEnumerable<string> hosts, Func<long>? 
     internal sealed class Entry
     {
         internal int Active, Failures;
-        internal long Until, Rejected;
+        internal long Until, Rejected, CooldownRejected, HostLimitRejected, TotalLimitRejected;
+        internal string? LastReason;
     }
     internal sealed class Lease(AuxiliaryAdmission owner, Entry entry) : IDisposable
     {
@@ -54,7 +55,15 @@ internal sealed class AuxiliaryAdmission(IEnumerable<string> hosts, Func<long>? 
             if (remaining > 0 || entry.Active >= PerHostLimit || active >= TotalLimit)
             {
                 entry.Rejected++;
-                if (remaining > 0) retrySeconds = (int)Math.Ceiling(remaining / 1000d);
+                if (remaining > 0)
+                {
+                    entry.CooldownRejected++; entry.LastReason = "cooldown";
+                    retrySeconds = (int)Math.Ceiling(remaining / 1000d);
+                }
+                else if (entry.Active >= PerHostLimit)
+                { entry.HostLimitRejected++; entry.LastReason = "host_limit"; }
+                else
+                { entry.TotalLimitRejected++; entry.LastReason = "total_limit"; }
                 return false;
             }
             entry.Active++; active++;
@@ -70,6 +79,8 @@ internal sealed class AuxiliaryAdmission(IEnumerable<string> hosts, Func<long>? 
                 active, totalLimit = TotalLimit, perHostLimit = PerHostLimit,
                 hosts = entries.Where(p => p.Value.Active > 0 || p.Value.Rejected > 0 || p.Value.Until > now())
                     .Select(p => new { host = p.Key, active = p.Value.Active, rejected = p.Value.Rejected,
+                        cooldownRejected = p.Value.CooldownRejected, hostLimitRejected = p.Value.HostLimitRejected,
+                        totalLimitRejected = p.Value.TotalLimitRejected, lastReason = p.Value.LastReason,
                         retrySeconds = Math.Max(0, (long)Math.Ceiling((p.Value.Until - now()) / 1000d)) }).ToArray()
             };
     }

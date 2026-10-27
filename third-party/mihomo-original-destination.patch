@@ -9,3 +9,19 @@ diff --git a/adapter/outbound/direct.go b/adapter/outbound/direct.go
  	opts := d.DialOptions()
  	opts = append(opts, dialer.WithResolver(resolver.DirectHostResolver))
  	c, err := dialer.DialContext(ctx, "tcp", metadata.RemoteAddress(), opts...)
+diff --git a/component/process/process_windows.go b/component/process/process_windows.go
+--- a/component/process/process_windows.go
++++ b/component/process/process_windows.go
+@@ -182,6 +182,12 @@ func newSearcher(isV4, isTCP bool) *searcher {
+ }
+ 
+ func getTransportTable(fn uintptr, family int, class int) ([]byte, error) {
++	return serialTransportTableRead(func() ([]byte, error) {
++		return readTransportTable(fn, family, class)
++	})
++}
++
++func readTransportTable(fn uintptr, family int, class int) ([]byte, error) {
+ 	for size, buf := uint32(8), make([]byte, 8); ; {
+ 		ptr := unsafe.Pointer(&buf[0])
+ 		err, _, _ := syscall.Syscall6(fn, 6, uintptr(ptr), uintptr(unsafe.Pointer(&size)), 0, uintptr(family), uintptr(class), 0)

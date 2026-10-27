@@ -8,8 +8,8 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $version = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'src/IPv6Lens.csproj') -Raw)).Project.PropertyGroup.Version
 $coreVersion = & $Mihomo -v
-if ($LASTEXITCODE -ne 0 -or ($coreVersion -join "`n") -notmatch '^Mihomo Meta v1\.19\.10-ipv6lens\.1 windows amd64(?:\s|$)') {
-    throw 'This package requires the patched Mihomo v1.19.10-ipv6lens.1 Windows amd64 binary.'
+if ($LASTEXITCODE -ne 0 -or ($coreVersion -join "`n") -notmatch '^Mihomo Meta v1\.19\.10-ipv6lens\.2 windows amd64(?:\s|$)') {
+    throw 'This package requires the patched Mihomo v1.19.10-ipv6lens.2 Windows amd64 binary.'
 }
 $source = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $MihomoSource))
 try {
@@ -36,7 +36,8 @@ Copy-Item -LiteralPath $Mihomo -Destination (Join-Path $root 'core/mihomo.exe')
 Copy-Item -LiteralPath $MihomoSource -Destination (Join-Path $root 'third-party/mihomo-v1.19.10-source.zip')
 $sourceFiles = @('README.md','THIRD-PARTY-NOTICES.md','third-party/mihomo-LICENSE.txt',
     'build-core.ps1','third-party/mihomo-original-destination.patch',
-    'third-party/mihomo-original-destination.go','third-party/mihomo-original-destination_test.go')
+    'third-party/mihomo-original-destination.go','third-party/mihomo-original-destination_test.go',
+    'third-party/mihomo-transport-table_windows.go','third-party/mihomo-transport-table_windows_test.go')
 foreach ($file in $sourceFiles) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $root $file)
 }

@@ -2,8 +2,8 @@ param([string]$Dotnet = 'dotnet', [Parameter(Mandatory)][string]$Mihomo)
 $ErrorActionPreference = 'Stop'
 if (!(Test-Path -LiteralPath $Mihomo)) { throw 'Provide the private patched Mihomo binary with -Mihomo; see build-core.ps1.' }
 $coreVersion = & $Mihomo -v
-if ($LASTEXITCODE -ne 0 -or ($coreVersion -join "`n") -notmatch '^Mihomo Meta v1\.19\.10-ipv6lens\.1 windows amd64(?:\s|$)') {
-    throw 'Build requires the patched v1.19.10-ipv6lens.1 Windows amd64 core, not an external proxy core.'
+if ($LASTEXITCODE -ne 0 -or ($coreVersion -join "`n") -notmatch '^Mihomo Meta v1\.19\.10-ipv6lens\.2 windows amd64(?:\s|$)') {
+    throw 'Build requires the patched v1.19.10-ipv6lens.2 Windows amd64 core, not an external proxy core.'
 }
 $env:HTTP_PROXY='http://127.0.0.1:7897'
 $env:HTTPS_PROXY=$env:HTTP_PROXY

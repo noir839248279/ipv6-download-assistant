@@ -17,5 +17,7 @@
 !/third-party/mihomo-original-destination.patch
 !/third-party/mihomo-original-destination.go
 !/third-party/mihomo-original-destination_test.go
+!/third-party/mihomo-transport-table_windows.go
+!/third-party/mihomo-transport-table_windows_test.go
 !/tests/
 !/tests/pac-routing.cjs

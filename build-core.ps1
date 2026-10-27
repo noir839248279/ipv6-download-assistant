@@ -26,6 +26,12 @@ if (!(Get-Content -LiteralPath (Join-Path $root 'adapter/outbound/direct.go') -R
 foreach ($name in @('mihomo-original-destination.go', 'mihomo-original-destination_test.go')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "third-party/$name") -Destination (Join-Path $root "adapter/outbound/$name")
 }
+if (!(Get-Content -LiteralPath (Join-Path $root 'component/process/process_windows.go') -Raw).Contains('return serialTransportTableRead(')) {
+    throw 'Windows process-table serialization patch was skipped.'
+}
+foreach ($name in @('mihomo-transport-table_windows.go', 'mihomo-transport-table_windows_test.go')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "third-party/$name") -Destination (Join-Path $root "component/process/$name")
+}
 $saved = @{}
 foreach ($name in @('CGO_ENABLED','GOOS','GOARCH','GOAMD64','GOTOOLCHAIN','GOMAXPROCS')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -36,8 +42,10 @@ try {
     try {
         & $Go test -p 2 -tags with_gvisor ./adapter/outbound -run '^TestIPv6LensPreserveDirectDestination$' -count=1
         if ($LASTEXITCODE -ne 0) { throw 'Core destination-preservation tests failed.' }
+        & $Go test -p 2 -tags with_gvisor ./component/process -run '^TestIPv6LensTransportTable' -count=1 -timeout 30s
+        if ($LASTEXITCODE -ne 0) { throw 'Core process-table serialization tests failed.' }
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($outputPath)) | Out-Null
-        & $Go build -p 2 -tags with_gvisor -trimpath -ldflags '-X github.com/metacubex/mihomo/constant.Version=v1.19.10-ipv6lens.1 -s -w' -o $outputPath .
+        & $Go build -p 2 -tags with_gvisor -trimpath -ldflags '-X github.com/metacubex/mihomo/constant.Version=v1.19.10-ipv6lens.2 -s -w' -o $outputPath .
         if ($LASTEXITCODE -ne 0) { throw 'Core build failed.' }
     } finally { Pop-Location }
 } finally {

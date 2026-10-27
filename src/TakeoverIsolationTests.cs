@@ -15,12 +15,13 @@ internal static class TakeoverIsolationTests
         void Check(bool ok, string name) { if (!ok) throw new IOException(name); checks.Add(name); }
         try
         {
-            Check(NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.1 windows amd64 with go1.24.3\n"),
+            Check(NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.2 windows amd64 with go1.24.3\n"),
                 "The private patched Windows core is accepted");
             Check(!NativeCapture.SupportedCore("Mihomo Meta v1.19.10 windows amd64 with go1.24.3") &&
                 !NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.10 windows amd64") &&
-                !NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.1 linux amd64") &&
-                !NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.1 windows arm64"),
+                !NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.1 windows amd64") &&
+                !NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.2 linux amd64") &&
+                !NativeCapture.SupportedCore("Mihomo Meta v1.19.10-ipv6lens.2 windows arm64"),
                 "Unpatched, mismatched and wrong-platform cores are rejected before takeover");
             Task.Run(async () =>
             {

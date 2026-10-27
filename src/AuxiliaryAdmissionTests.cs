@@ -147,6 +147,7 @@ internal static class AuxiliaryAdmissionTests
                 held.Add(lease!);
             }
         check(!gate.TryEnter("e", out _, out _), "Combined auxiliary tunnels cannot exceed 32 slots");
+        check(!gate.TryEnter("a", out _, out _), "A full host has a distinct rejection reason");
         foreach (var lease in held) { lease.Dispose(); lease.Dispose(); }
         check(gate.TryEnter("e", out var recovered, out _), "Disposal releases slots exactly once");
         recovered!.Dispose();
@@ -159,6 +160,24 @@ internal static class AuxiliaryAdmissionTests
         earlier!.Connected(); earlier.Dispose();
         check(!gate.TryEnter("e", out _, out int retry) && retry == 15,
             "An older in-flight success cannot erase a newly opened cooldown");
+        using (var snapshot = JsonDocument.Parse(JsonSerializer.Serialize(gate.Snapshot())))
+        {
+            var hosts = snapshot.RootElement.GetProperty("hosts").EnumerateArray().ToArray();
+            var a = hosts.Single(h => h.GetProperty("host").GetString() == "a");
+            var e = hosts.Single(h => h.GetProperty("host").GetString() == "e");
+            check(a.GetProperty("hostLimitRejected").GetInt64() == 1 &&
+                a.GetProperty("lastReason").GetString() == "host_limit",
+                "Snapshot identifies per-host saturation");
+            check(e.GetProperty("cooldownRejected").GetInt64() == 1 &&
+                e.GetProperty("totalLimitRejected").GetInt64() == 1 &&
+                e.GetProperty("lastReason").GetString() == "cooldown",
+                "Snapshot separates upstream-failure cooldown from total saturation");
+            check(hosts.All(h => h.GetProperty("rejected").GetInt64() ==
+                h.GetProperty("cooldownRejected").GetInt64() +
+                h.GetProperty("hostLimitRejected").GetInt64() +
+                h.GetProperty("totalLimitRejected").GetInt64()),
+                "Every rejection has exactly one diagnostic cause");
+        }
         now += 15000;
         check(gate.TryEnter("e", out var after, out _), "Cooldown expires automatically without toggling services");
         after!.Connected(); after.Dispose();
